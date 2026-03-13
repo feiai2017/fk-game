@@ -6,6 +6,7 @@ export const PRIORITY_THRESHOLDS = {
   unstableResourceStarvedRate: 0.2,
   unstableResourceOverflowRate: 0.2,
   earlyWindowSeconds: 8,
+  dotBurstReadyStacks: 1,
 };
 
 export interface SkillDecisionContext {
@@ -56,9 +57,22 @@ export function evaluateSkillPriority(
     reasons.push("斩杀窗口");
   }
 
-  if ((skill.burstDotPercent ?? 0) > 0 && context.targetDotStacks >= 2) {
+  if (
+    (skill.burstDotPercent ?? 0) > 0 &&
+    context.targetDotStacks >= PRIORITY_THRESHOLDS.dotBurstReadyStacks
+  ) {
     score += 96 + Math.min(30, context.targetDotStacks * 6);
     reasons.push("DOT层数可引爆");
+  }
+
+  if (context.archetype === "dot" && skill.id === "rupture_bloom") {
+    if (context.targetDotStacks > 0) {
+      score += 58 + Math.min(28, context.targetDotStacks * 7);
+      reasons.push("DOT转化收割");
+    } else if (isEarly) {
+      score -= 30;
+      reasons.push("先铺DOT");
+    }
   }
 
   if (isDefensive && context.playerHpRatio <= PRIORITY_THRESHOLDS.playerLowHp) {
@@ -84,6 +98,10 @@ export function evaluateSkillPriority(
     if (setupBonus > 0) {
       score += setupBonus;
       reasons.push("开局铺垫");
+    }
+    if (context.archetype === "dot" && context.enemyCount >= 3 && skill.tags.includes("spread")) {
+      score += 38;
+      reasons.push("开局铺场");
     }
   }
 
@@ -138,4 +156,3 @@ function setupPriorityBonus(skill: SkillDef, archetype: ArchetypeKey): number {
       return 0;
   }
 }
-

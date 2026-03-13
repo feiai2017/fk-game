@@ -121,6 +121,12 @@ function buildEffectDescription(skill: SkillDef): string {
   if ((skill.healRatio ?? 0) > 0) {
     parts.push(`恢复生命（系数 ${skill.healRatio?.toFixed(2)}）`);
   }
+  if (skill.id === "toxic_lance") {
+    parts.push("命中后会向另一名目标扩散弱化DOT，用于开局压低多目标血线");
+  }
+  if (skill.id === "rupture_bloom") {
+    parts.push("对已有DOT层数目标会额外增伤，定位是DOT转化收割");
+  }
   if (parts.length === 0) {
     return "功能型技能";
   }
@@ -128,6 +134,15 @@ function buildEffectDescription(skill: SkillDef): string {
 }
 
 function buildStrongWhen(skill: SkillDef, archetype: ArchetypeKey): string {
+  if (skill.id === "rupture_bloom") {
+    return "先铺DOT再释放可明显提高斩杀效率，并通过击杀回能/护盾稳定节奏。";
+  }
+  if (skill.id === "contagion_wave") {
+    return "敌人数较多或开局窗口时优先释放，尽快建立全体DOT覆盖。";
+  }
+  if (skill.id === "toxic_lance") {
+    return "用于开局快速铺层和维持DOT覆盖，保证后续引爆有目标可吃满收益。";
+  }
   if (skill.tags.includes("finisher")) {
     return "目标低血时价值最高，建议留给斩杀窗口。";
   }

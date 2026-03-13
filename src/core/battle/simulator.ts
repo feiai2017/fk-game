@@ -58,6 +58,23 @@ interface RuntimeState {
 
 const MAX_COMBAT_LOG = 220;
 const MAX_COMBAT_EVENTS = 420;
+const DOT_ROUTE_TUNING = {
+  starterSpreadTickMultiplier: 0.75,
+  ruptureBonusPerStack: 0.06,
+  ruptureBonusCap: 0.24,
+  ruptureExecuteThreshold: 0.45,
+  ruptureExecuteBonus: 0.12,
+  ruptureBurstBonusPerStack: 0.025,
+  ruptureBurstBonusCap: 0.12,
+  dotCycleRefund: 2,
+  dotBurstRefundPerStack: 1.5,
+  dotBurstCooldownRelief: 0.45,
+  coverageMitigationPerEnemy: 0.03,
+  coverageMitigationCap: 0.1,
+  killShieldRatio: 0.12,
+  killHealRatio: 0.025,
+  killResourceRefund: 3,
+};
 
 export function runAutoBattle(input: BattleInput): SimulationOutput {
   const loadoutSeed = [
@@ -198,12 +215,50 @@ export function runAutoBattle(input: BattleInput): SimulationOutput {
           if (state.firstKillTime === null) {
             state.firstKillTime = time;
           }
+          const hadDotsOnKill = getDotStacks(enemy) > 0;
           pushCombatEvent(combatEvents, combatLog, {
             time,
             type: "ENEMY_KILL",
             category: "offense",
             summary: `敌人 ${enemy.id} 被 ${dot.name} 击败`,
           });
+          if (hadDotsOnKill) {
+            applyDotKillStabilizer({
+              input,
+              gainResource: (value, sourceName) => {
+                state.resource = clamp(state.resource + value, 0, input.finalStats.resourceMax);
+                pushCombatEvent(combatEvents, combatLog, {
+                  time,
+                  type: "RESOURCE_GAIN",
+                  category: "resource",
+                  summary: `${sourceName} 回能 ${value.toFixed(1)}`,
+                });
+              },
+              gainShield: (value, sourceName) => {
+                state.shield = Math.max(0, state.shield + value);
+                pushCombatEvent(combatEvents, combatLog, {
+                  time,
+                  type: "SHIELD_GAIN",
+                  category: "defense",
+                  summary: `${sourceName} 护盾 +${Math.round(value)}`,
+                });
+              },
+              healPlayer: (value, sourceName) => {
+                const prev = state.playerHp;
+                state.playerHp = Math.min(input.finalStats.hp, state.playerHp + value);
+                const heal = Math.max(0, state.playerHp - prev);
+                if (heal > 0) {
+                  pushCombatEvent(combatEvents, combatLog, {
+                    time,
+                    type: "HEAL_GAIN",
+                    category: "defense",
+                    summary: `${sourceName} 治疗 ${Math.round(heal)}`,
+                  });
+                }
+              },
+              reduceAllCooldownsBy: (value) => reduceAllCooldowns(cooldowns, value),
+            });
+          }
         }
       });
     }
@@ -355,14 +410,20 @@ export function runAutoBattle(input: BattleInput): SimulationOutput {
     }
 
     while (time >= state.nextEnemyAttackAt && aliveEnemies(enemies).length > 0) {
+      const livingEnemies = aliveEnemies(enemies);
       const incomingRaw =
-        aliveEnemies(enemies).length *
+        livingEnemies.length *
         input.floor.enemyAtk *
         enemyPressureAttackModifier(input.floor.pressure);
-      const reduced = reducedByResist(reducedByDefense(incomingRaw, input.finalStats.def), input.finalStats.resist);
+      const reduced = reducedByResist(
+        reducedByDefense(incomingRaw, input.finalStats.def),
+        input.finalStats.resist,
+      );
+      const mitigationRatio = computeDotCoverageMitigation(input.archetype, livingEnemies);
+      const incomingAfterMitigation = reduced * (1 - mitigationRatio);
       const prevShield = state.shield;
-      const afterShield = Math.max(0, reduced - state.shield);
-      state.shield = Math.max(0, state.shield - reduced);
+      const afterShield = Math.max(0, incomingAfterMitigation - state.shield);
+      state.shield = Math.max(0, state.shield - incomingAfterMitigation);
       if (prevShield > state.shield) {
         pushCombatEvent(combatEvents, combatLog, {
           time,
@@ -378,7 +439,10 @@ export function runAutoBattle(input: BattleInput): SimulationOutput {
         time,
         type: heavy ? "ENEMY_HEAVY_HIT" : "ENEMY_HIT",
         category: heavy ? "danger" : "defense",
-        summary: `敌方攻击造成 ${Math.round(afterShield)} 伤害`,
+        summary:
+          mitigationRatio > 0
+            ? `敌方攻击造成 ${Math.round(afterShield)} 伤害（DOT压制减伤 ${Math.round(mitigationRatio * 100)}%）`
+            : `敌方攻击造成 ${Math.round(afterShield)} 伤害`,
       });
       const cadence = input.floor.pressure === "swarm" ? ENEMY_ATTACK_INTERVAL / 1.08 : ENEMY_ATTACK_INTERVAL;
       state.nextEnemyAttackAt += cadence;
@@ -551,10 +615,21 @@ function castSkill(args: CastSkillArgs): void {
       }
       const target = skill.tags.includes("aoe") ? currentTargets[hitIndex % currentTargets.length] : currentTargets[0];
       let raw = input.finalStats.atk * perHitRatio * (1 + input.finalStats.skillPower) * pressureDirect;
+      const targetDotStacksBeforeHit = getDotStacks(target);
       const critChance = input.finalStats.crit + (skill.critBonus ?? 0);
       const didCrit = rollCrit(critChance, rng);
       if (didCrit) {
         raw *= critMultiplier(input.finalStats.critDamage);
+      }
+      if (skill.id === "rupture_bloom" && targetDotStacksBeforeHit > 0) {
+        const stackBonus = Math.min(
+          DOT_ROUTE_TUNING.ruptureBonusCap,
+          targetDotStacksBeforeHit * DOT_ROUTE_TUNING.ruptureBonusPerStack,
+        );
+        raw *= 1 + stackBonus;
+        if (target.hp <= input.floor.enemyHp * DOT_ROUTE_TUNING.ruptureExecuteThreshold) {
+          raw *= 1 + DOT_ROUTE_TUNING.ruptureExecuteBonus;
+        }
       }
       const executeBonus = input.loadout.core?.mechanicModifiers?.executeBonus ?? 0;
       if (executeBonus > 0 && target.hp <= input.floor.enemyHp * 0.3 && skill.tags.includes("finisher")) {
@@ -615,6 +690,15 @@ function castSkill(args: CastSkillArgs): void {
           category: "offense",
           summary: `敌人 ${target.id} 被 ${skill.name} 击败`,
         });
+        if (targetDotStacksBeforeHit > 0) {
+          applyDotKillStabilizer({
+            input,
+            gainResource,
+            gainShield: (value, sourceName) => setShield(getShield() + value, sourceName),
+            healPlayer: (value, sourceName) => setPlayerHp(getPlayerHp() + value, sourceName),
+            reduceAllCooldownsBy,
+          });
+        }
       }
     }
   }
@@ -622,12 +706,12 @@ function castSkill(args: CastSkillArgs): void {
   if (skill.dot) {
     const extraStacks = input.loadout.core?.mechanicModifiers?.extraDotStacks ?? 0;
     const targetsForDot = skill.tags.includes("aoe") ? aliveEnemies(enemies) : aliveEnemies(enemies).slice(0, 1);
+    const rawDot = input.finalStats.atk * skill.dot.tickRatio * (1 + input.finalStats.dotPower);
+    const adjusted = reducedByResist(
+      reducedByDefense(rawDot * pressureDamageModifier("dot", input.floor.pressure), input.floor.enemyDef),
+      input.floor.enemyResist,
+    );
     for (const target of targetsForDot) {
-      const rawDot = input.finalStats.atk * skill.dot.tickRatio * (1 + input.finalStats.dotPower);
-      const adjusted = reducedByResist(
-        reducedByDefense(rawDot * pressureDamageModifier("dot", input.floor.pressure), input.floor.enemyDef),
-        input.floor.enemyResist,
-      );
       applyDotToEnemy({ enemy: target, skill, now: time, damagePerTick: adjusted, extraStacks });
       pushCombatEvent(combatEvents, combatLog, {
         time,
@@ -636,13 +720,47 @@ function castSkill(args: CastSkillArgs): void {
         summary: `${skill.name} 施加 DOT（敌${target.id}）`,
       });
     }
+    if (input.archetype === "dot" && skill.tags.includes("starter") && !skill.tags.includes("aoe")) {
+      const spreadTarget = selectSpreadTarget(enemies, targetsForDot[0]?.id);
+      if (spreadTarget) {
+        applyDotToEnemy({
+          enemy: spreadTarget,
+          skill,
+          now: time,
+          damagePerTick: adjusted * DOT_ROUTE_TUNING.starterSpreadTickMultiplier,
+          extraStacks: Math.max(0, extraStacks - 1),
+        });
+        pushCombatEvent(combatEvents, combatLog, {
+          time,
+          type: "DOT_APPLY",
+          category: "offense",
+          summary: `${skill.name} 扩散 DOT（敌${spreadTarget.id}）`,
+        });
+      }
+    }
+    if (input.archetype === "dot") {
+      gainResource(DOT_ROUTE_TUNING.dotCycleRefund, "DOT循环回能");
+    }
   }
 
   if ((skill.burstDotPercent ?? 0) > 0) {
-    const target = aliveEnemies(enemies)[0];
+    const target =
+      skill.id === "rupture_bloom"
+        ? selectRuptureTarget(enemies, input.floor.enemyHp)
+        : aliveEnemies(enemies)[0];
     if (target) {
       const burstBonus = input.loadout.core?.mechanicModifiers?.dotBurstBonus ?? 0;
-      const burstPercent = (skill.burstDotPercent ?? 0) * (1 + burstBonus + castOutcome.dotBurstMultiplierBonus);
+      const targetDotStacks = getDotStacks(target);
+      const ruptureBurstBonus =
+        skill.id === "rupture_bloom"
+          ? Math.min(
+              DOT_ROUTE_TUNING.ruptureBurstBonusCap,
+              targetDotStacks * DOT_ROUTE_TUNING.ruptureBurstBonusPerStack,
+            )
+          : 0;
+      const burstPercent =
+        (skill.burstDotPercent ?? 0) *
+        (1 + burstBonus + castOutcome.dotBurstMultiplierBonus + ruptureBurstBonus);
       const burst = burstDotDamage(target, burstPercent);
       if (burst > 0) {
         const dealt = applyDamage(target, burst);
@@ -652,6 +770,27 @@ function castSkill(args: CastSkillArgs): void {
           type: "DOT_BURST",
           category: "offense",
           summary: `${skill.name} 引爆 DOT ${Math.round(dealt)}`,
+        });
+        if (input.archetype === "dot" && skill.id === "rupture_bloom" && targetDotStacks > 0) {
+          const refund = targetDotStacks * DOT_ROUTE_TUNING.dotBurstRefundPerStack;
+          gainResource(refund, "裂蚀转化回能");
+          reduceAllCooldownsBy(DOT_ROUTE_TUNING.dotBurstCooldownRelief);
+        }
+      }
+      if (target.hp <= 0 && targetDotStacks > 0) {
+        onFirstKill(time);
+        pushCombatEvent(combatEvents, combatLog, {
+          time,
+          type: "ENEMY_KILL",
+          category: "offense",
+          summary: `敌人 ${target.id} 被 ${skill.name} 引爆击败`,
+        });
+        applyDotKillStabilizer({
+          input,
+          gainResource,
+          gainShield: (value, sourceName) => setShield(getShield() + value, sourceName),
+          healPlayer: (value, sourceName) => setPlayerHp(getPlayerHp() + value, sourceName),
+          reduceAllCooldownsBy,
         });
       }
     }
@@ -861,6 +1000,76 @@ function aliveEnemies(enemies: EnemyState[]): EnemyState[] {
 
 function getDotStacks(enemy: EnemyState): number {
   return enemy.dots.reduce((sum, dot) => sum + dot.stacks, 0);
+}
+
+function computeDotCoverageMitigation(archetype: BattleInput["archetype"], enemies: EnemyState[]): number {
+  if (archetype !== "dot") {
+    return 0;
+  }
+  const covered = enemies.filter((enemy) => enemy.hp > 0 && getDotStacks(enemy) > 0).length;
+  if (covered <= 0) {
+    return 0;
+  }
+  return Math.min(
+    DOT_ROUTE_TUNING.coverageMitigationCap,
+    covered * DOT_ROUTE_TUNING.coverageMitigationPerEnemy,
+  );
+}
+
+function selectSpreadTarget(enemies: EnemyState[], skipId?: number): EnemyState | undefined {
+  const candidates = enemies
+    .filter((enemy) => enemy.hp > 0 && enemy.id !== skipId)
+    .sort((left, right) => {
+      const leftStacks = getDotStacks(left);
+      const rightStacks = getDotStacks(right);
+      if (leftStacks !== rightStacks) {
+        return leftStacks - rightStacks;
+      }
+      if (left.hp !== right.hp) {
+        return right.hp - left.hp;
+      }
+      return left.id - right.id;
+    });
+  return candidates[0];
+}
+
+function selectRuptureTarget(enemies: EnemyState[], floorEnemyHp: number): EnemyState | undefined {
+  const living = enemies.filter((enemy) => enemy.hp > 0);
+  if (living.length === 0) {
+    return undefined;
+  }
+  return [...living].sort((left, right) => {
+    const leftStacks = getDotStacks(left);
+    const rightStacks = getDotStacks(right);
+    if (leftStacks !== rightStacks) {
+      return rightStacks - leftStacks;
+    }
+    const leftRatio = left.hp / Math.max(1, floorEnemyHp);
+    const rightRatio = right.hp / Math.max(1, floorEnemyHp);
+    if (leftRatio !== rightRatio) {
+      return leftRatio - rightRatio;
+    }
+    return left.id - right.id;
+  })[0];
+}
+
+interface DotKillStabilizerInput {
+  input: BattleInput;
+  gainResource: (value: number, sourceName: string) => void;
+  gainShield: (value: number, sourceName: string) => void;
+  healPlayer: (value: number, sourceName: string) => void;
+  reduceAllCooldownsBy: (value: number) => void;
+}
+
+function applyDotKillStabilizer(args: DotKillStabilizerInput): void {
+  const { input, gainResource, gainShield, healPlayer, reduceAllCooldownsBy } = args;
+  if (input.archetype !== "dot") {
+    return;
+  }
+  gainResource(DOT_ROUTE_TUNING.killResourceRefund, "毒蚀收割");
+  gainShield(input.finalStats.atk * DOT_ROUTE_TUNING.killShieldRatio, "毒蚀收割");
+  healPlayer(input.finalStats.hp * DOT_ROUTE_TUNING.killHealRatio, "毒蚀收割");
+  reduceAllCooldownsBy(0.25);
 }
 
 function pushCombatEvent(events: CombatEvent[], logs: string[], event: CombatEvent): void {

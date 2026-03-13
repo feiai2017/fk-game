@@ -11,8 +11,8 @@ export const ARCHETYPES: ArchetypeDef[] = [
   {
     key: "dot",
     name: "持续蚀伤",
-    summary: "通过叠加持续伤害并在窗口期引爆，逐步拉高输出。",
-    strengths: ["持续输出成长高", "长战压制能力强"],
+    summary: "先铺DOT压低群体血线，再用转化技能收割首杀并滚起循环。",
+    strengths: ["多目标早期压血稳定", "DOT转化收割能力强"],
   },
   {
     key: "crit",
