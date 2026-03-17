@@ -1,4 +1,4 @@
-import { Link } from "react-router-dom";
+﻿import { Link } from "react-router-dom";
 import { useMemo } from "react";
 import { BuildPanel } from "@/components/build/BuildPanel";
 import { BuildComparisonCard } from "@/components/build/BuildComparisonCard";
@@ -101,8 +101,8 @@ export function BuildPage(): JSX.Element {
           <CardTitle>构筑完成后即可挑战</CardTitle>
         </CardHeader>
         <CardContent className="flex flex-wrap items-center gap-2">
-          <p className="text-sm text-muted-foreground">当前可挑战层：{state.run.currentFloor}</p>
-          <p className="text-sm text-muted-foreground">跑局状态：{state.run.status}</p>
+          <p className="text-sm text-muted-foreground">当前可挑战层：第 {state.run.currentFloor} 层</p>
+          <p className="text-sm text-muted-foreground">当前状态：{runStatusLabel(state.run.status)}</p>
           <Button asChild size="sm">
             <Link to="/tower">前往爬塔</Link>
           </Button>
@@ -146,4 +146,17 @@ function buildSignature(archetype: ArchetypeKey, loadout: Loadout): string {
     .map((slot) => loadout[slot]?.id ?? "none")
     .join("|");
   return `${archetype}:${equipped}:${loadout.skillIds.join("|")}`;
+}
+
+function runStatusLabel(status: string): string {
+  switch (status) {
+    case "in_progress":
+      return "进行中";
+    case "reward_pending":
+      return "待选奖励";
+    case "over":
+      return "已结束";
+    default:
+      return status;
+  }
 }

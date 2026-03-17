@@ -1,4 +1,4 @@
-import type { FloorDef, FloorGuidance } from "@/core/battle/types";
+﻿import type { FloorDef, FloorGuidance } from "@/core/battle/types";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 interface FloorGoalCardProps {
@@ -10,7 +10,7 @@ export function FloorGoalCard({ floor, guidance }: FloorGoalCardProps): JSX.Elem
   return (
     <Card>
       <CardHeader>
-        <CardTitle>第{floor.floor}层目标说明</CardTitle>
+        <CardTitle>第 {floor.floor} 层目标说明</CardTitle>
       </CardHeader>
       <CardContent className="space-y-2">
         <div className="rounded-md border bg-background p-2">

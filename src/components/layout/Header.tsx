@@ -1,7 +1,8 @@
-import { NavLink } from "react-router-dom";
+﻿import { NavLink } from "react-router-dom";
 import { cn } from "@/lib/utils";
 
 const links = [
+  { to: "/run", label: "运行演示" },
   { to: "/build", label: "构筑" },
   { to: "/tower", label: "爬塔" },
   { to: "/report", label: "战报" },
@@ -12,8 +13,8 @@ export function Header(): JSX.Element {
     <header className="border-b border-border bg-card/80 backdrop-blur-sm">
       <div className="mx-auto flex w-full max-w-7xl items-center justify-between px-4 py-3">
         <div>
-          <h1 className="text-base font-semibold">构筑验证自动战斗原型</h1>
-          <p className="text-xs text-muted-foreground">第一阶段原型</p>
+          <h1 className="text-base font-semibold">构筑验证自走战斗原型</h1>
+          <p className="text-xs text-muted-foreground">阶段一演示版</p>
         </div>
         <nav className="flex items-center gap-2">
           {links.map((link) => (

@@ -13,7 +13,7 @@ export function FocusedFloorDiagnosisCard({
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Floor {diagnosis.floor} 聚焦诊断（开发视角）</CardTitle>
+        <CardTitle>第 {diagnosis.floor} 层聚焦诊断（开发视角）</CardTitle>
       </CardHeader>
       <CardContent className="space-y-2 text-sm">
         <div className="rounded-md border bg-background p-2">

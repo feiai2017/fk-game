@@ -164,15 +164,6 @@ export function GameStateProvider({ children }: PropsWithChildren): JSX.Element 
         loadout: battleLoadout,
         archetype: state.archetype,
       });
-      const rewardOptions =
-        report.win && floorNumber < DEMO_RUN_TARGET_FLOOR
-          ? generateRunRewards({
-              floor: floorNumber,
-              archetype: state.archetype,
-              skills: selectedSkills,
-              progress: state.run.progress,
-            })
-          : [];
 
       setState((current) => {
         const nextProgress = appendBattleToRunProgress(current.run.progress, report);
@@ -226,6 +217,24 @@ export function GameStateProvider({ children }: PropsWithChildren): JSX.Element 
             }),
           };
         } else {
+          const rewardOptions = generateRunRewards({
+            floor: floorNumber,
+            archetype: current.archetype,
+            skills: selectedSkills,
+            progress: current.run.progress,
+          });
+          console.debug("[run-reward] candidates", {
+            floor: floorNumber,
+            archetype: current.archetype,
+            optionIds: rewardOptions.map((entry) => entry.id),
+            optionsBrief: rewardOptions.map((entry) => ({
+              id: entry.id,
+              theme: entry.theme,
+              routeTag: entry.routeTag,
+              title: entry.title,
+            })),
+            options: rewardOptions,
+          });
           nextRun = {
             ...current.run,
             status: "reward_pending",
@@ -262,15 +271,31 @@ export function GameStateProvider({ children }: PropsWithChildren): JSX.Element 
       if (current.run.status !== "reward_pending" || !current.run.pendingRewards?.length) {
         return current;
       }
-      const option = current.run.pendingRewards.find((entry) => entry.id === optionId);
-      if (!option) {
+      const chosen = current.run.pendingRewards.find((entry) => entry.id === optionId);
+      if (!chosen) {
         return current;
       }
-      const updatedProgress = applyRunReward(
-        current.run.progress,
-        option,
-        Math.max(1, current.run.currentFloor - 1),
-      );
+      const rewardFloor = Math.max(1, current.run.currentFloor - 1);
+      const nextProgress = applyRunReward(current.run.progress, chosen, rewardFloor);
+      console.debug("[run-reward] apply", {
+        runId: current.run.id,
+        floor: rewardFloor,
+        optionId: chosen.id,
+        title: chosen.title,
+        category: chosen.category,
+        theme: chosen.theme,
+        routeTag: chosen.routeTag,
+        before: {
+          statBonuses: current.run.progress.statBonuses,
+          skillUpgrades: current.run.progress.skillUpgrades,
+          passiveEffects: current.run.progress.passiveEffects.map((entry) => entry.id),
+        },
+        after: {
+          statBonuses: nextProgress.statBonuses,
+          skillUpgrades: nextProgress.skillUpgrades,
+          passiveEffects: nextProgress.passiveEffects.map((entry) => entry.id),
+        },
+      });
       return {
         ...current,
         run: {
@@ -278,7 +303,7 @@ export function GameStateProvider({ children }: PropsWithChildren): JSX.Element 
           status: "in_progress",
           canContinue: true,
           pendingRewards: undefined,
-          progress: updatedProgress,
+          progress: nextProgress,
         },
       };
     });

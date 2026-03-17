@@ -63,7 +63,7 @@ export function DamageBreakdown({ report }: DamageBreakdownProps): JSX.Element {
         </div>
         {report.formulaBreakdowns && report.formulaBreakdowns.length > 0 ? (
           <div className="space-y-2">
-            <p className="text-xs font-semibold text-muted-foreground">Top3 伤害来源公式拆解（近似）</p>
+            <p className="text-xs font-semibold text-muted-foreground">前三伤害来源公式拆解（近似）</p>
             {report.formulaBreakdowns.map((entry) => (
               <div key={`${entry.sourceId}-${entry.category}`} className="rounded-md border bg-background p-2 text-xs">
                 <p className="font-semibold">

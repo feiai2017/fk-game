@@ -1,4 +1,4 @@
-import type {
+﻿import type {
   ArchetypeKey,
   DiagnosisEntry,
   EquipmentSlot,
@@ -23,7 +23,7 @@ export function tPressure(tag: TowerPressureTag): string {
     case "baseline":
       return "基线";
     case "swarm":
-      return "群怪";
+      return "群体压制";
     case "burst":
       return "爆发";
     case "single":
@@ -31,7 +31,7 @@ export function tPressure(tag: TowerPressureTag): string {
     case "sustain":
       return "续航";
     case "antiMechanic":
-      return "克制机制";
+      return "反制机制";
     default:
       return tag;
   }
@@ -105,9 +105,9 @@ export function tDiagnosisCode(code: DiagnosisEntry["code"]): string {
     case "LOW_SURVIVAL":
       return "生存不足";
     case "LOW_DOT_RATIO":
-      return "持续伤害占比低";
+      return "DOT占比偏低";
     case "LOW_PROC_RATIO":
-      return "触发伤害占比低";
+      return "触发占比偏低";
     default:
       return code;
   }

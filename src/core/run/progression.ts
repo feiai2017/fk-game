@@ -152,6 +152,7 @@ function applySkillUpgrade(skill: SkillDef, upgrade: RunSkillUpgrade): SkillDef 
     cost: Math.max(0, skill.cost - (upgrade.costReduction ?? 0)),
     directRatio: addMaybe(skill.directRatio, upgrade.directRatioBonus),
     procRatio: addMaybe(skill.procRatio, upgrade.procRatioBonus),
+    hits: upgrade.hitsBonus ? Math.max(1, (skill.hits ?? 1) + upgrade.hitsBonus) : skill.hits,
     dot: skill.dot
       ? {
           ...skill.dot,

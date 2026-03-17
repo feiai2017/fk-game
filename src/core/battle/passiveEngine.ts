@@ -16,6 +16,7 @@ export interface PassiveRuntime {
   effects: PassiveEffectInstance[];
   cooldowns: Map<string, number>;
   nextProcBonusRatio: number;
+  flags: Map<string, boolean>;
 }
 
 export interface PassiveEventPayload {
@@ -45,6 +46,7 @@ export function createPassiveRuntime(loadout: Loadout): PassiveRuntime {
     effects,
     cooldowns: new Map(effects.map((effect) => [effect.key, 0])),
     nextProcBonusRatio: 0,
+    flags: new Map(),
   };
 }
 

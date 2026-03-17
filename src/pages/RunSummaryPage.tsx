@@ -1,4 +1,4 @@
-import { Link } from "react-router-dom";
+﻿import { Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useGameState } from "@/hooks/useGameState";
@@ -13,7 +13,7 @@ export function RunSummaryPage(): JSX.Element {
     return (
       <Card>
         <CardHeader>
-          <CardTitle>跑局结算</CardTitle>
+          <CardTitle>本局结算</CardTitle>
         </CardHeader>
         <CardContent className="space-y-2">
           <p className="text-sm text-muted-foreground">当前没有可展示的结算信息。</p>
@@ -29,7 +29,7 @@ export function RunSummaryPage(): JSX.Element {
     <div className="grid gap-4">
       <Card>
         <CardHeader>
-          <CardTitle>短流程结算（Floor 10）</CardTitle>
+          <CardTitle>短流程结算（第10层）</CardTitle>
         </CardHeader>
         <CardContent className="grid gap-2 text-sm md:grid-cols-3">
           <Stat label="结果" value={summary.outcome === "victory" ? "通关" : "失败"} />
@@ -63,13 +63,13 @@ export function RunSummaryPage(): JSX.Element {
 
       <Card>
         <CardHeader>
-          <CardTitle>构筑简述</CardTitle>
+          <CardTitle>构筑摘要</CardTitle>
         </CardHeader>
         <CardContent className="space-y-2">
           <p className="text-sm">{summary.shortBuildSummary}</p>
           <div className="flex flex-wrap gap-2">
             <Button size="sm" onClick={startNewRun}>
-              重新开始新跑局
+              开始新局
             </Button>
             <Button asChild size="sm" variant="secondary">
               <Link to="/build">返回构筑</Link>

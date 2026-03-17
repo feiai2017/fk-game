@@ -1,4 +1,4 @@
-import type { RunRewardOption } from "@/core/battle/types";
+﻿import type { RunRewardOption } from "@/core/battle/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -17,18 +17,22 @@ export function RewardSelectionCard({
   return (
     <Card>
       <CardHeader>
-        <CardTitle>胜利奖励（三选一）- 第 {floor} 层</CardTitle>
+        <CardTitle>胜利奖励（3选1）- 第 {floor} 层</CardTitle>
       </CardHeader>
-      <CardContent className="grid gap-2 md:grid-cols-3">
+      <CardContent className="grid gap-3 md:grid-cols-3">
         {rewards.map((option) => (
           <div key={option.id} className="rounded-md border bg-background p-3">
-            <div className="flex items-center gap-2">
-              <Badge variant="outline">{categoryLabel(option.category)}</Badge>
-              <p className="text-sm font-semibold">{option.title}</p>
+            <div className="mb-2 flex flex-wrap items-center gap-2">
+              <Badge variant="outline">{themeLabel(option.theme)}</Badge>
+              {option.routeTag ? <Badge>{option.routeTag}</Badge> : null}
             </div>
+            <p className="text-sm font-semibold">{option.title}</p>
             <p className="mt-1 text-xs text-muted-foreground">{option.description}</p>
-            <Button className="mt-2 w-full" size="sm" onClick={() => onSelect(option.id)}>
-              选择此奖励
+            {option.routeHint ? (
+              <p className="mt-1 text-xs text-muted-foreground">路线提示：{option.routeHint}</p>
+            ) : null}
+            <Button className="mt-3 w-full" size="sm" onClick={() => onSelect(option.id)}>
+              选择该奖励
             </Button>
           </div>
         ))}
@@ -37,17 +41,15 @@ export function RewardSelectionCard({
   );
 }
 
-function categoryLabel(category: RunRewardOption["category"]): string {
-  switch (category) {
-    case "stat_bonus":
-      return "属性";
-    case "skill_upgrade":
-      return "技能强化";
-    case "passive_modifier":
-      return "被动";
-    case "relic_pick":
-      return "遗物";
+function themeLabel(theme: RunRewardOption["theme"]): string {
+  switch (theme) {
+    case "numeric":
+      return "数值强化";
+    case "mechanic":
+      return "机制强化";
+    case "route":
+      return "路线强化";
     default:
-      return category;
+      return "奖励";
   }
 }

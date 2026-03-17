@@ -1,14 +1,12 @@
-import { createSeededRng } from "@/core/battle/formulas";
-import type {
+﻿import type {
   ArchetypeKey,
-  RunRewardRecord,
+  PassiveEffectDef,
   RunProgress,
   RunRewardOption,
   RunSkillUpgrade,
   SkillDef,
   Stats,
 } from "@/core/battle/types";
-import { RELICS } from "@/data/relics";
 
 interface GenerateRunRewardsInput {
   floor: number;
@@ -17,18 +15,301 @@ interface GenerateRunRewardsInput {
   progress: RunProgress;
 }
 
-export function generateRunRewards(input: GenerateRunRewardsInput): RunRewardOption[] {
-  const rng = createSeededRng(
-    `reward:${input.floor}:${input.archetype}:${input.progress.selectedRewards.length}`,
-  );
-  const chosenSkill = pickSkill(input.skills, rng.next());
-  const relicOption = pickRelicOption(input, rng.next());
+interface NumericTemplate {
+  id: string;
+  title: string;
+  description: string;
+  stats: Partial<Stats>;
+  debugTags: string[];
+}
 
-  return [
-    buildStatBonusOption(input, rng.next()),
-    buildSkillUpgradeOption(input, chosenSkill, rng.next()),
-    relicOption ?? buildPassiveOption(input, rng.next()),
-  ];
+interface MechanicTemplate {
+  id: string;
+  title: string;
+  description: string;
+  passiveEffect?: PassiveEffectDef;
+  skillUpgrade?: {
+    skillId: string;
+    upgrade: RunSkillUpgrade;
+  };
+  debugTags: string[];
+}
+
+interface RouteTemplate {
+  id: string;
+  routeTag: string;
+  title: string;
+  description: string;
+  routeHint: string;
+  stats?: Partial<Stats>;
+  passiveEffect?: PassiveEffectDef;
+  skillUpgrade?: {
+    skillId: string;
+    upgrade: RunSkillUpgrade;
+  };
+  debugTags: string[];
+}
+
+const DOT_NUMERIC_REWARDS: NumericTemplate[] = [
+  {
+    id: "dot_numeric_damage",
+    title: "腐蚀增幅",
+    description: "提高DOT伤害，并小幅提升攻击。",
+    stats: { dotPower: 0.12, atk: 10 },
+    debugTags: ["dot", "numeric", "damage"],
+  },
+  {
+    id: "dot_numeric_survival",
+    title: "腐蚀护壳",
+    description: "提高生命与防御，帮助度过前中期压力。",
+    stats: { hp: 120, def: 10 },
+    debugTags: ["dot", "numeric", "survival"],
+  },
+  {
+    id: "dot_numeric_cycle",
+    title: "毒循环",
+    description: "提升能量回复与冷却缩减，强化循环覆盖。",
+    stats: { resourceRegen: 1.8, cdr: 0.05 },
+    debugTags: ["dot", "numeric", "cycle"],
+  },
+];
+
+const DOT_MECHANIC_REWARDS: MechanicTemplate[] = [
+  {
+    id: "dot_mechanic_lance",
+    title: "毒枪扩散",
+    description: "毒枪命中后额外扩散一层弱化DOT。",
+    passiveEffect: {
+      id: "DOT_LANCE_SPLASH",
+      event: "onSkillHit",
+      value: 1,
+      value2: 0.58,
+    },
+    debugTags: ["dot", "mechanic", "lance_spread"],
+  },
+  {
+    id: "dot_mechanic_wave",
+    title: "传染开场",
+    description: "传染波首次释放免费，并获得额外覆盖层数。",
+    passiveEffect: {
+      id: "CONTAGION_OPENING",
+      event: "onSkillCast",
+      value: 1,
+      value2: 1,
+    },
+    debugTags: ["dot", "mechanic", "contagion_opening"],
+  },
+  {
+    id: "dot_mechanic_rupture",
+    title: "裂绽过载",
+    description: "裂绽对高DOT层目标加成更高，且额外+1段命中。",
+    passiveEffect: {
+      id: "RUPTURE_STACK_SURGE",
+      event: "onSkillCast",
+      value: 0.08,
+      value2: 0.22,
+    },
+    skillUpgrade: {
+      skillId: "rupture_bloom",
+      upgrade: { hitsBonus: 1 },
+    },
+    debugTags: ["dot", "mechanic", "rupture_overdrive"],
+  },
+];
+
+const DOT_ROUTE_REWARDS: RouteTemplate[] = [
+  {
+    id: "dot_route_spread",
+    routeTag: "DOT扩散",
+    title: "路线：DOT扩散",
+    description: "强化大范围覆盖与前期压血效率。",
+    routeHint: "清场偏慢时优先选择。",
+    stats: { dotPower: 0.08, resourceRegen: 1 },
+    passiveEffect: {
+      id: "DOT_LANCE_SPLASH",
+      event: "onSkillHit",
+      value: 1,
+      value2: 0.62,
+    },
+    debugTags: ["dot", "route", "spread"],
+  },
+  {
+    id: "dot_route_burst",
+    routeTag: "DOT引爆",
+    title: "路线：DOT引爆",
+    description: "强化转换爆发，缩短首杀形成时间。",
+    routeHint: "敌人长期残血不死时优先选择。",
+    stats: { atk: 12, cdr: 0.04 },
+    passiveEffect: {
+      id: "RUPTURE_STACK_SURGE",
+      event: "onSkillCast",
+      value: 0.1,
+      value2: 0.25,
+    },
+    skillUpgrade: {
+      skillId: "rupture_bloom",
+      upgrade: { directRatioBonus: 0.14, hitsBonus: 1 },
+    },
+    debugTags: ["dot", "route", "burst"],
+  },
+  {
+    id: "dot_route_sustain",
+    routeTag: "DOT续航",
+    title: "路线：DOT续航",
+    description: "提升生存和循环稳定，强化长线兑现。",
+    routeHint: "容易在循环成型前暴毙时优先选择。",
+    stats: { hp: 140, shieldPower: 0.1, resourceRegen: 1.2 },
+    passiveEffect: {
+      id: "CONTAGION_OPENING",
+      event: "onSkillCast",
+      value: 1,
+      value2: 1,
+    },
+    debugTags: ["dot", "route", "sustain"],
+  },
+];
+
+const GENERIC_NUMERIC_REWARDS: Record<ArchetypeKey, NumericTemplate[]> = {
+  dot: DOT_NUMERIC_REWARDS,
+  crit: [
+    {
+      id: "crit_numeric",
+      title: "精准增幅",
+      description: "提升暴击率、暴伤和攻击。",
+      stats: { crit: 0.06, critDamage: 0.14, atk: 8 },
+      debugTags: ["crit", "numeric"],
+    },
+  ],
+  engine: [
+    {
+      id: "engine_numeric",
+      title: "回路增幅",
+      description: "提升触发强度与能量回复。",
+      stats: { procPower: 0.1, resourceRegen: 1.6 },
+      debugTags: ["engine", "numeric"],
+    },
+  ],
+};
+
+const GENERIC_MECHANIC_REWARDS: Record<ArchetypeKey, MechanicTemplate[]> = {
+  dot: DOT_MECHANIC_REWARDS,
+  crit: [
+    {
+      id: "crit_mechanic",
+      title: "处决压缩",
+      description: "强化处决印记的冷却与收割价值。",
+      skillUpgrade: {
+        skillId: "execution_mark",
+        upgrade: { cooldownReduction: 0.35, directRatioBonus: 0.12 },
+      },
+      debugTags: ["crit", "mechanic"],
+    },
+  ],
+  engine: [
+    {
+      id: "engine_mechanic",
+      title: "溢出导流",
+      description: "资源溢出可更稳定地转化为收益。",
+      passiveEffect: {
+        id: "ENGINE_OVERFLOW_GUARD",
+        event: "onResourceOverflowTick",
+        value: 26,
+        value2: 0.28,
+        cooldown: 1,
+      },
+      debugTags: ["engine", "mechanic"],
+    },
+  ],
+};
+
+const GENERIC_ROUTE_REWARDS: Record<ArchetypeKey, RouteTemplate[]> = {
+  dot: DOT_ROUTE_REWARDS,
+  crit: [
+    {
+      id: "crit_route_execute",
+      routeTag: "暴击收割",
+      title: "路线：暴击收割",
+      description: "强化低血斩杀窗口的爆发能力。",
+      routeHint: "敌人经常残血拖很久时优先选择。",
+      stats: { crit: 0.04, cdr: 0.04 },
+      skillUpgrade: {
+        skillId: "execution_mark",
+        upgrade: { directRatioBonus: 0.15, cooldownReduction: 0.3 },
+      },
+      debugTags: ["crit", "route"],
+    },
+  ],
+  engine: [
+    {
+      id: "engine_route_convert",
+      routeTag: "循环兑现",
+      title: "路线：循环兑现",
+      description: "更稳定地将资源循环转化为触发伤害。",
+      routeHint: "资源溢出高但伤害仍低时优先选择。",
+      stats: { procPower: 0.08, cdr: 0.03 },
+      passiveEffect: {
+        id: "SPEND_EMPOWER_NEXT_PROC",
+        event: "onSkillCast",
+        value: 0.36,
+        value2: 20,
+      },
+      debugTags: ["engine", "route"],
+    },
+  ],
+};
+
+export function generateRunRewards(input: GenerateRunRewardsInput): RunRewardOption[] {
+  if (input.skills.length === 0) {
+    return [];
+  }
+  const seed = deterministicSeed(input.floor, input.archetype, input.progress.selectedRewards.length);
+
+  const numeric = pickDeterministic(GENERIC_NUMERIC_REWARDS[input.archetype], seed + 3);
+  const mechanic = pickDeterministic(GENERIC_MECHANIC_REWARDS[input.archetype], seed + 11);
+  const route = pickDeterministic(GENERIC_ROUTE_REWARDS[input.archetype], seed + 19);
+
+  const numericOption: RunRewardOption = {
+    id: `reward-${input.floor}-numeric-${numeric.id}`,
+    category: "stat_bonus",
+    theme: "numeric",
+    title: numeric.title,
+    description: numeric.description,
+    debugTags: [...numeric.debugTags],
+    effect: {
+      stats: numeric.stats,
+    },
+  };
+
+  const mechanicOption: RunRewardOption = {
+    id: `reward-${input.floor}-mechanic-${mechanic.id}`,
+    category: mechanic.skillUpgrade ? "skill_upgrade" : "passive_modifier",
+    theme: "mechanic",
+    title: mechanic.title,
+    description: mechanic.description,
+    debugTags: [...mechanic.debugTags],
+    effect: {
+      passiveEffect: mechanic.passiveEffect ? { ...mechanic.passiveEffect } : undefined,
+      skillUpgrade: mechanic.skillUpgrade ? { ...mechanic.skillUpgrade } : undefined,
+    },
+  };
+
+  const routeOption: RunRewardOption = {
+    id: `reward-${input.floor}-route-${route.id}`,
+    category: route.skillUpgrade ? "skill_upgrade" : "passive_modifier",
+    theme: "route",
+    routeTag: route.routeTag,
+    routeHint: route.routeHint,
+    title: route.title,
+    description: route.description,
+    debugTags: [...route.debugTags],
+    effect: {
+      stats: route.stats,
+      passiveEffect: route.passiveEffect ? { ...route.passiveEffect } : undefined,
+      skillUpgrade: route.skillUpgrade ? { ...route.skillUpgrade } : undefined,
+    },
+  };
+
+  return [numericOption, mechanicOption, routeOption];
 }
 
 export function applyRunReward(
@@ -52,213 +333,48 @@ export function applyRunReward(
       next.statBonuses[statKey] = (next.statBonuses[statKey] ?? 0) + (value ?? 0);
     }
   }
+
   if (option.effect.skillUpgrade) {
     const skillId = option.effect.skillUpgrade.skillId;
-    const current = next.skillUpgrades[skillId] ?? {};
-    const incoming = option.effect.skillUpgrade.upgrade;
-    next.skillUpgrades[skillId] = {
-      cooldownReduction: (current.cooldownReduction ?? 0) + (incoming.cooldownReduction ?? 0),
-      costReduction: (current.costReduction ?? 0) + (incoming.costReduction ?? 0),
-      directRatioBonus: (current.directRatioBonus ?? 0) + (incoming.directRatioBonus ?? 0),
-      dotTickBonus: (current.dotTickBonus ?? 0) + (incoming.dotTickBonus ?? 0),
-      procRatioBonus: (current.procRatioBonus ?? 0) + (incoming.procRatioBonus ?? 0),
-    };
+    const prev = next.skillUpgrades[skillId] ?? {};
+    const add = option.effect.skillUpgrade.upgrade;
+    next.skillUpgrades[skillId] = mergeSkillUpgrade(prev, add);
   }
+
   if (option.effect.passiveEffect) {
     next.passiveEffects.push({ ...option.effect.passiveEffect });
   }
+
   if (option.effect.relicId && !next.relicIds.includes(option.effect.relicId)) {
     next.relicIds.push(option.effect.relicId);
   }
 
-  const record: RunRewardRecord = {
+  next.selectedRewards.push({
     floor,
     optionId: option.id,
     category: option.category,
     title: option.title,
-  };
-  next.selectedRewards.push(record);
+  });
   return next;
 }
 
-function buildStatBonusOption(
-  input: GenerateRunRewardsInput,
-  roll: number,
-): RunRewardOption {
-  const pools: Array<{ title: string; description: string; stats: Partial<Stats> }> =
-    input.archetype === "dot"
-      ? [
-          { title: "腐蚀增压", description: "dotPower +12%，atk +10", stats: { dotPower: 0.12, atk: 10 } },
-          { title: "稳态护甲", description: "hp +90，def +12", stats: { hp: 90, def: 12 } },
-        ]
-      : input.archetype === "crit"
-        ? [
-            { title: "致命瞄准", description: "crit +8%，critDamage +16%", stats: { crit: 0.08, critDamage: 0.16 } },
-            { title: "火力校准", description: "atk +14，speed +0.05", stats: { atk: 14, speed: 0.05 } },
-          ]
-        : [
-            { title: "过载导通", description: "procPower +12%，resourceRegen +1.5", stats: { procPower: 0.12, resourceRegen: 1.5 } },
-            { title: "回路稳压", description: "resourceMax +10，cdr +4%", stats: { resourceMax: 10, cdr: 0.04 } },
-          ];
-
-  const picked = pools[Math.floor(roll * pools.length)];
+function mergeSkillUpgrade(prev: RunSkillUpgrade, add: RunSkillUpgrade): RunSkillUpgrade {
   return {
-    id: `reward-${input.floor}-stat-${Math.floor(roll * 1000)}`,
-    category: "stat_bonus",
-    title: picked.title,
-    description: picked.description,
-    effect: {
-      stats: picked.stats,
-    },
+    cooldownReduction: (prev.cooldownReduction ?? 0) + (add.cooldownReduction ?? 0),
+    costReduction: (prev.costReduction ?? 0) + (add.costReduction ?? 0),
+    directRatioBonus: (prev.directRatioBonus ?? 0) + (add.directRatioBonus ?? 0),
+    dotTickBonus: (prev.dotTickBonus ?? 0) + (add.dotTickBonus ?? 0),
+    procRatioBonus: (prev.procRatioBonus ?? 0) + (add.procRatioBonus ?? 0),
+    hitsBonus: (prev.hitsBonus ?? 0) + (add.hitsBonus ?? 0),
   };
 }
 
-function buildSkillUpgradeOption(
-  input: GenerateRunRewardsInput,
-  skill: SkillDef,
-  roll: number,
-): RunRewardOption {
-  const upgrade = skillUpgradeByArchetype(skill, input.archetype, roll);
-  return {
-    id: `reward-${input.floor}-skill-${skill.id}`,
-    category: "skill_upgrade",
-    title: `强化：${skill.name}`,
-    description: describeUpgrade(upgrade),
-    effect: {
-      skillUpgrade: {
-        skillId: skill.id,
-        upgrade,
-      },
-    },
-  };
+function deterministicSeed(floor: number, archetype: ArchetypeKey, selectedCount: number): number {
+  const archetypeValue = archetype === "dot" ? 17 : archetype === "crit" ? 31 : 47;
+  return floor * 13 + selectedCount * 7 + archetypeValue;
 }
 
-function buildPassiveOption(
-  input: GenerateRunRewardsInput,
-  roll: number,
-): RunRewardOption {
-  const passive =
-    input.archetype === "dot"
-      ? {
-          title: "引爆返能",
-          description: "释放 DOT 引爆技能时返还能量并小幅增益引爆倍率。",
-          effect: {
-            id: "DOT_BURST_REFUND" as const,
-            event: "onSkillCast" as const,
-            value: 4 + Math.floor(roll * 2),
-            value2: 0.1,
-            cooldown: 2.4,
-          },
-        }
-      : input.archetype === "crit"
-        ? {
-            title: "收尾追击",
-            description: "终结技能低血暴击后返还能量并缩短全局冷却。",
-            effect: {
-              id: "CRIT_FINISHER_REFUND" as const,
-              event: "onSkillHit" as const,
-              value: 10 + Math.floor(roll * 4),
-              value2: 1.0,
-              cooldown: 3,
-            },
-          }
-        : {
-            title: "溢流护持",
-            description: "资源溢出时转化护盾并追加一次小触发。",
-            effect: {
-              id: "ENGINE_OVERFLOW_GUARD" as const,
-              event: "onResourceOverflowTick" as const,
-              value: 18 + Math.floor(roll * 8),
-              value2: 0.24,
-              cooldown: 1.1,
-            },
-          };
-
-  return {
-    id: `reward-${input.floor}-passive-${passive.effect.id}`,
-    category: "passive_modifier",
-    title: passive.title,
-    description: passive.description,
-    effect: {
-      passiveEffect: passive.effect,
-    },
-  };
-}
-
-function pickRelicOption(
-  input: GenerateRunRewardsInput,
-  roll: number,
-): RunRewardOption | undefined {
-  if (input.floor % 2 !== 0) {
-    return undefined;
-  }
-  const pool = RELICS.filter(
-    (relic) => relic.archetypeBias === input.archetype && !input.progress.relicIds.includes(relic.id),
-  );
-  if (pool.length === 0) {
-    return undefined;
-  }
-  const relic = pool[Math.floor(roll * pool.length)];
-  return {
-    id: `reward-${input.floor}-relic-${relic.id}`,
-    category: "relic_pick",
-    title: `获得遗物祝福：${relic.name}`,
-    description: "立即获得该遗物的核心机制与属性加成（本次跑局生效）。",
-    effect: {
-      relicId: relic.id,
-    },
-  };
-}
-
-function pickSkill(skills: SkillDef[], roll: number): SkillDef {
-  if (skills.length === 0) {
-    throw new Error("No skill available for reward generation.");
-  }
-  return skills[Math.floor(roll * skills.length)];
-}
-
-function skillUpgradeByArchetype(
-  _skill: SkillDef,
-  archetype: ArchetypeKey,
-  roll: number,
-): RunSkillUpgrade {
-  if (archetype === "dot") {
-    return {
-      cooldownReduction: 0.4 + roll * 0.2,
-      dotTickBonus: 0.04,
-      directRatioBonus: 0.08,
-    };
-  }
-  if (archetype === "crit") {
-    return {
-      cooldownReduction: 0.3 + roll * 0.2,
-      directRatioBonus: 0.12,
-      costReduction: 2,
-    };
-  }
-  return {
-    cooldownReduction: 0.35 + roll * 0.2,
-    procRatioBonus: 0.08,
-    costReduction: 3,
-  };
-}
-
-function describeUpgrade(upgrade: RunSkillUpgrade): string {
-  const desc: string[] = [];
-  if ((upgrade.cooldownReduction ?? 0) > 0) {
-    desc.push(`冷却 -${(upgrade.cooldownReduction ?? 0).toFixed(1)}s`);
-  }
-  if ((upgrade.costReduction ?? 0) > 0) {
-    desc.push(`消耗 -${(upgrade.costReduction ?? 0).toFixed(0)}`);
-  }
-  if ((upgrade.directRatioBonus ?? 0) > 0) {
-    desc.push(`直伤系数 +${(upgrade.directRatioBonus ?? 0).toFixed(2)}`);
-  }
-  if ((upgrade.dotTickBonus ?? 0) > 0) {
-    desc.push(`DOT tick系数 +${(upgrade.dotTickBonus ?? 0).toFixed(2)}`);
-  }
-  if ((upgrade.procRatioBonus ?? 0) > 0) {
-    desc.push(`触发系数 +${(upgrade.procRatioBonus ?? 0).toFixed(2)}`);
-  }
-  return desc.join("，");
+function pickDeterministic<T>(list: T[], seed: number): T {
+  const index = Math.abs(seed) % list.length;
+  return list[index];
 }

@@ -1,4 +1,4 @@
-import type { BattleReport } from "@/core/battle/types";
+﻿import type { BattleReport } from "@/core/battle/types";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatNumber, formatSeconds } from "@/lib/format";
@@ -16,7 +16,7 @@ export function BattleSummaryCard({ report }: BattleSummaryCardProps): JSX.Eleme
           <CardTitle>最近一场战斗</CardTitle>
         </CardHeader>
         <CardContent>
-          <p className="text-sm text-muted-foreground">还没有战斗记录。</p>
+          <p className="text-sm text-muted-foreground">暂无战斗记录。</p>
         </CardContent>
       </Card>
     );

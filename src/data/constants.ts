@@ -1,5 +1,7 @@
 import type { Stats } from "@/core/battle/types";
 
+export const APP_VERSION = "0.1.0";
+
 export const BASE_PLAYER_STATS: Stats = {
   hp: 1200,
   atk: 120,
