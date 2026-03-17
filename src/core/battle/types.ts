@@ -16,6 +16,33 @@ export type TowerPressureTag =
   | "sustain"
   | "antiMechanic";
 
+export type EnemyTemplateKey = "fast" | "tank" | "balanced" | "antiDot" | "boss";
+
+export interface EnemyTemplateDef {
+  key: EnemyTemplateKey;
+  name: string;
+  hpMultiplier: number;
+  atkMultiplier: number;
+  defMultiplier: number;
+  speedMultiplier: number;
+  resistMultiplier: number;
+}
+
+export interface FloorEnemyConfig {
+  template: EnemyTemplateKey;
+  count: number;
+}
+
+export interface FloorEnemyUnit {
+  id: number;
+  template: EnemyTemplateKey;
+  hp: number;
+  atk: number;
+  def: number;
+  resist: number;
+  speed: number;
+}
+
 export interface Stats {
   hp: number;
   atk: number;
@@ -66,6 +93,9 @@ export type PassiveEffectId =
   | "DOT_BURST_REFUND"
   | "DOT_COVERAGE_CDR"
   | "DOT_FULLSTACK_ECHO"
+  | "DOT_LANCE_SPLASH"
+  | "CONTAGION_OPENING"
+  | "RUPTURE_STACK_SURGE"
   | "CRIT_FINISHER_CDR"
   | "CRIT_FINISHER_VALUE"
   | "CRIT_FINISHER_REFUND"
@@ -124,9 +154,45 @@ export interface FloorDef {
   enemyAtk: number;
   enemyDef: number;
   enemyResist: number;
+  enemySpeed: number;
   enemyCount: number;
   boss: boolean;
+  enemyConfig?: FloorEnemyConfig[];
+  enemyUnits?: FloorEnemyUnit[];
   notes?: string;
+}
+
+export interface FloorEnemyPresentation {
+  template: EnemyTemplateKey;
+  name: string;
+  tags: string[];
+  description: string;
+  count: number;
+}
+
+export interface FloorWavePresentation {
+  index: number;
+  title: string;
+  enemies: FloorEnemyPresentation[];
+  note?: string;
+}
+
+export interface BossPresentation {
+  name: string;
+  passive: string;
+  skills: string[];
+  phaseTrigger: string;
+  dangerTip: string;
+}
+
+export interface FloorPreview {
+  floor: number;
+  title: string;
+  subtitle: string;
+  dangerHint: string;
+  waveSummary: string;
+  waves: FloorWavePresentation[];
+  boss?: BossPresentation;
 }
 
 export interface BattleInput {
@@ -262,6 +328,8 @@ export type CombatEventType =
   | "DOT_APPLY"
   | "DOT_TICK"
   | "DOT_BURST"
+  | "DOT_CLEANSE"
+  | "BOSS_MECHANIC"
   | "PROC_TRIGGER"
   | "SHIELD_GAIN"
   | "SHIELD_LOSS"
@@ -269,6 +337,9 @@ export type CombatEventType =
   | "RESOURCE_GAIN"
   | "RESOURCE_SPEND"
   | "RESOURCE_OVERFLOW"
+  | "ENEMY_SUMMON"
+  | "BUFF_GAIN"
+  | "DEBUFF_APPLY"
   | "ENEMY_HIT"
   | "ENEMY_HEAVY_HIT"
   | "ENEMY_KILL"
@@ -282,9 +353,44 @@ export interface CombatEvent {
   category: CombatEventCategory;
   summary: string;
   value?: number;
+  amount?: number;
   sourceId?: string;
   sourceName?: string;
+  targetId?: number | string;
+  targetName?: string;
+  tags?: string[];
   meta?: Record<string, number | string | boolean | null | undefined>;
+  metadata?: Record<string, number | string | boolean | null | undefined>;
+}
+
+export interface BattleTimelineEntry {
+  time: number;
+  timeLabel: string;
+  category: CombatEventCategory;
+  severity: "normal" | "warning" | "critical";
+  typeLabel: string;
+  text: string;
+}
+
+export interface CombatSnapshot {
+  time: number;
+  playerHp: number;
+  playerShield: number;
+  playerEnergy: number;
+  aliveEnemies: number;
+  enemyRemainingHpRatio: number;
+  dotCoveredEnemies: number;
+  recentIncomingDamageWindow: number;
+  recentOutgoingDamageWindow: number;
+}
+
+export interface BattleReportContext {
+  seed: string | null;
+  floor: FloorDef;
+  archetype: ArchetypeKey;
+  finalStats: Stats;
+  selectedSkills: SkillDef[];
+  loadout: Loadout;
 }
 
 export interface DamageFormulaBreakdown {
@@ -342,7 +448,10 @@ export interface RunSkillUpgrade {
   directRatioBonus?: number;
   dotTickBonus?: number;
   procRatioBonus?: number;
+  hitsBonus?: number;
 }
+
+export type RunRewardTheme = "numeric" | "mechanic" | "route";
 
 export interface RunRewardEffect {
   stats?: Partial<Stats>;
@@ -357,6 +466,10 @@ export interface RunRewardEffect {
 export interface RunRewardOption {
   id: string;
   category: RunRewardCategory;
+  theme?: RunRewardTheme;
+  routeTag?: string;
+  routeHint?: string;
+  debugTags?: string[];
   title: string;
   description: string;
   effect: RunRewardEffect;
@@ -445,6 +558,27 @@ export interface BuildComparisonHint {
   message: string;
 }
 
+export interface BattleRecap {
+  outcomeText: string;
+  reasonSummary: string;
+  keyWinOrFailPoint: string;
+  suggestion: string;
+  outputSummary: {
+    totalDamage: number;
+    directRatio: number;
+    dotRatio: number;
+    procRatio: number;
+  };
+  intakeSummary: {
+    topSourceName: string;
+    topSourceDamage: number;
+    mostDangerousSource: string;
+    maxSingleHit: number;
+    maxSingleHitTime: number | null;
+  };
+  dangerWindowSummary: string;
+}
+
 export interface BattleReport {
   win: boolean;
   floor: number;
@@ -454,6 +588,10 @@ export interface BattleReport {
   guidance?: ReportGuidance;
   combatLog: string[];
   combatEvents?: CombatEvent[];
+  timeline?: BattleTimelineEntry[];
+  combatSnapshots?: CombatSnapshot[];
+  recap?: BattleRecap;
+  context?: BattleReportContext;
   formulaBreakdowns?: DamageFormulaBreakdown[];
   focusedFloorDiagnosis?: FocusedFloorDiagnosis;
   loot: ItemDef[];
@@ -489,6 +627,15 @@ export interface DotInstance {
 
 export interface EnemyState {
   id: number;
+  template: EnemyTemplateKey;
+  maxHp: number;
   hp: number;
+  atk: number;
+  def: number;
+  resist: number;
+  speed: number;
+  nextAttackAt: number;
   dots: DotInstance[];
+  traitCooldownAt?: number;
+  bossMechanicTriggered?: boolean;
 }

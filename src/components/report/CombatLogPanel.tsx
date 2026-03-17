@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+﻿import { useMemo, useState } from "react";
 import type { BattleReport, CombatEvent, CombatEventCategory } from "@/core/battle/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -16,6 +16,7 @@ const FILTER_OPTIONS: Array<{ key: EventFilter; label: string }> = [
   { key: "defense", label: "防御" },
   { key: "resource", label: "资源" },
   { key: "danger", label: "危险" },
+  { key: "system", label: "系统" },
 ];
 
 export function CombatLogPanel({ report }: CombatLogPanelProps): JSX.Element {
@@ -48,14 +49,14 @@ export function CombatLogPanel({ report }: CombatLogPanelProps): JSX.Element {
     <Card>
       <CardHeader>
         <CardTitle className="flex flex-wrap items-center justify-between gap-2">
-          <span>战斗时间线</span>
+          <span>详细战斗事件（调试）</span>
           {deathTime !== undefined ? (
             <Button
               size="sm"
               variant={preDeathOnly ? "default" : "secondary"}
               onClick={() => setPreDeathOnly((value) => !value)}
             >
-              {preDeathOnly ? "显示全程" : "聚焦死亡前 8 秒"}
+              {preDeathOnly ? "显示全程" : "聚焦死亡前8秒"}
             </Button>
           ) : null}
         </CardTitle>

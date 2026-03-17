@@ -1,16 +1,21 @@
-import { Link } from "react-router-dom";
+﻿import { Link } from "react-router-dom";
 import { useMemo, useState } from "react";
+import { FloorPreviewCard } from "@/components/battle/FloorPreviewCard";
 import { recommendItemForBuild } from "@/core/build/itemRecommendations";
+import { BattleRecapCard } from "@/components/report/BattleRecapCard";
 import { CombatLogPanel } from "@/components/report/CombatLogPanel";
 import { DamageBreakdown } from "@/components/report/DamageBreakdown";
 import { DiagnosisPanel } from "@/components/report/DiagnosisPanel";
+import { ExportReportButton } from "@/components/report/ExportReportButton";
 import { FocusedFloorDiagnosisCard } from "@/components/report/FocusedFloorDiagnosisCard";
 import { GuidancePanel } from "@/components/report/GuidancePanel";
+import { KeyTimelineCard } from "@/components/report/KeyTimelineCard";
 import { ReportOverview } from "@/components/report/ReportOverview";
 import { RewardSelectionCard } from "@/components/report/RewardSelectionCard";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { buildFloorPreview } from "@/core/tower/floorPreview";
 import { useGameState } from "@/hooks/useGameState";
 import { tDiagnosisCode } from "@/lib/i18n";
 
@@ -19,6 +24,38 @@ export function ReportPage(): JSX.Element {
   const [showDevDetails, setShowDevDetails] = useState(false);
   const report = state.lastReport;
   const rewardPending = state.run.status === "reward_pending" && report?.win;
+
+  const floorPreview = useMemo(
+    () => (report?.context?.floor ? buildFloorPreview(report.context.floor) : undefined),
+    [report?.context?.floor],
+  );
+
+  const deathTime = useMemo(
+    () => report?.combatEvents?.find((event) => event.type === "PLAYER_DEATH")?.time,
+    [report?.combatEvents],
+  );
+
+  const selectedRewardTitle = useMemo(() => {
+    if (!report) {
+      return undefined;
+    }
+    return [...state.run.progress.selectedRewards]
+      .reverse()
+      .find((reward) => reward.floor === report.floor)?.title;
+  }, [report, state.run.progress.selectedRewards]);
+
+  const rewardNote = useMemo(() => {
+    if (!report?.win) {
+      return "失败无奖励。";
+    }
+    if (rewardPending) {
+      return "已生成3个奖励候选，选择后才可进入下一层。";
+    }
+    if (selectedRewardTitle) {
+      return `本层已选奖励：${selectedRewardTitle}`;
+    }
+    return "本层奖励记录暂不可用。";
+  }, [report?.win, rewardPending, selectedRewardTitle]);
 
   const lootWithHints = useMemo(
     () =>
@@ -45,16 +82,10 @@ export function ReportPage(): JSX.Element {
           <CardTitle>战斗报告</CardTitle>
         </CardHeader>
         <CardContent className="space-y-2">
-          <p className="text-sm text-muted-foreground">暂无报告，请先前往爬塔挑战。</p>
-          {state.run.endSummary ? (
-            <Button asChild size="sm" variant="secondary">
-              <Link to="/run-summary">查看跑局结算</Link>
-            </Button>
-          ) : (
-            <Button asChild size="sm">
-              <Link to="/tower">去挑战当前层</Link>
-            </Button>
-          )}
+          <p className="text-sm text-muted-foreground">暂无报告，请先去挑战楼层。</p>
+          <Button asChild size="sm">
+            <Link to="/tower">前往爬塔</Link>
+          </Button>
         </CardContent>
       </Card>
     );
@@ -64,30 +95,31 @@ export function ReportPage(): JSX.Element {
     <div className="grid gap-4">
       <Card>
         <CardHeader>
-          <CardTitle>{report.win ? "本层通过" : "本层失败"}</CardTitle>
+          <CardTitle className="flex flex-wrap items-center justify-between gap-2">
+            <span>{report.win ? "本层通过" : "本层失败"}</span>
+            <ExportReportButton report={report} run={state.run} />
+          </CardTitle>
         </CardHeader>
         <CardContent className="space-y-2">
-          {report.guidance ? (
-            <>
-              <p className="text-sm">
-                本层重点：<span className="font-semibold">{report.guidance.floorObjective.primaryObjective}</span>
-              </p>
-              <p className="text-sm text-muted-foreground">{report.guidance.floorObjective.likelyCauseLine}</p>
-              <p className="text-sm text-muted-foreground">
-                下一步建议：{report.guidance.priorityAdjustment.topPriorityAdjustment}
-              </p>
-            </>
-          ) : null}
           {report.diagnosis[0] ? (
             <div className="rounded-md border bg-background p-2">
-              <p className="text-xs font-semibold">{tDiagnosisCode(report.diagnosis[0].code)}</p>
+              <p className="text-xs font-semibold">主诊断：{tDiagnosisCode(report.diagnosis[0].code)}</p>
               <p className="text-sm text-muted-foreground">{report.diagnosis[0].message}</p>
             </div>
+          ) : null}
+          {report.guidance ? (
+            <p className="text-sm text-muted-foreground">
+              本层重点：{report.guidance.floorObjective.primaryObjective}
+            </p>
           ) : null}
         </CardContent>
       </Card>
 
-      <GuidancePanel report={report} />
+      {floorPreview ? <FloorPreviewCard preview={floorPreview} compact /> : null}
+      {report.recap ? <BattleRecapCard recap={report.recap} rewardNote={rewardNote} /> : null}
+      {report.timeline && report.timeline.length > 0 ? (
+        <KeyTimelineCard entries={report.timeline} deathTime={deathTime} />
+      ) : null}
 
       {rewardPending && state.run.pendingRewards ? (
         <RewardSelectionCard
@@ -105,21 +137,21 @@ export function ReportPage(): JSX.Element {
           {!report.win ? (
             <>
               <Button size="sm" onClick={startNewRun}>
-                快速重开跑局
+                快速重开
               </Button>
               <Button asChild size="sm" variant="secondary">
                 <Link to="/build">返回构筑</Link>
               </Button>
             </>
           ) : rewardPending ? (
-            <p className="text-sm text-muted-foreground">先完成三选一奖励，再继续挑战下一层。</p>
+            <p className="text-sm text-muted-foreground">请先从 3 个奖励中选择 1 个，随后才能进入下一层。</p>
           ) : state.run.isOver ? (
             <>
               <Button asChild size="sm">
                 <Link to="/run-summary">查看 floor 10 结算</Link>
               </Button>
               <Button size="sm" variant="secondary" onClick={startNewRun}>
-                开始新跑局
+                开始新局
               </Button>
             </>
           ) : (
@@ -146,6 +178,7 @@ export function ReportPage(): JSX.Element {
         </CardHeader>
         {showDevDetails ? (
           <CardContent className="space-y-4">
+            <GuidancePanel report={report} />
             {report.focusedFloorDiagnosis ? (
               <FocusedFloorDiagnosisCard diagnosis={report.focusedFloorDiagnosis} />
             ) : null}
