@@ -1,46 +1,39 @@
-﻿import { Link } from "react-router-dom";
-import { useMemo, useState } from "react";
-import { FloorPreviewCard } from "@/components/battle/FloorPreviewCard";
-import { BattleRecapCard } from "@/components/report/BattleRecapCard";
-import { KeyTimelineCard } from "@/components/report/KeyTimelineCard";
-import { RewardSelectionCard } from "@/components/report/RewardSelectionCard";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+﻿import { useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { InBattleScreen } from "@/components/battle/InBattleScreen";
+import { PostBattleScreen } from "@/components/battle/PostBattleScreen";
+import { PreBattleScreen } from "@/components/battle/PreBattleScreen";
+import type { BattleReport } from "@/core/battle/types";
 import { buildDemoBuildSummary } from "@/core/build/demoBuildSummary";
-import { getFloorEnemyTraitSummaries } from "@/core/tower/enemyTraits";
-import { buildFloorGuidance } from "@/core/tower/floorGuidance";
+import { buildPlaybackView } from "@/core/report/playbackView";
 import { buildFloorPreview } from "@/core/tower/floorPreview";
-import { DEMO_RUN_TARGET_FLOOR } from "@/data/constants";
 import { TOWER_FLOORS } from "@/data/tower";
 import { useGameState } from "@/hooks/useGameState";
-import { formatNumber, formatPercent, formatSeconds } from "@/lib/format";
-import { tPressure } from "@/lib/i18n";
+
+type BattleScreenState = "preparing" | "battling" | "resolved";
 
 export function RunPage(): JSX.Element {
+  const navigate = useNavigate();
   const { state, continueRun, selectRunReward, startNewRun } = useGameState();
-  const [showDebug, setShowDebug] = useState(false);
 
-  const report = state.lastReport;
-  const run = state.run;
-  const canBattle = run.status === "in_progress" && !run.isOver;
-  const rewardPending = run.status === "reward_pending" && !!run.pendingRewards?.length;
-  const runEnded = run.status === "over" || run.isOver;
+  const [screenState, setScreenState] = useState<BattleScreenState>(
+    state.lastReport ? "resolved" : "preparing",
+  );
+  const [activeReport, setActiveReport] = useState<BattleReport | undefined>(state.lastReport);
+  const [playbackTime, setPlaybackTime] = useState(0);
+  const [playbackSpeed, setPlaybackSpeed] = useState<1 | 2>(1);
+  const [paused, setPaused] = useState(false);
+  const [showDetailRecap, setShowDetailRecap] = useState(false);
+
+  const canStart = state.run.status === "in_progress" && !state.run.isOver;
+  const rewardPending = state.run.status === "reward_pending" && activeReport?.win;
 
   const currentFloor = useMemo(
-    () => TOWER_FLOORS.find((entry) => entry.floor === run.currentFloor),
-    [run.currentFloor],
-  );
-  const floorGuidance = useMemo(
-    () => (currentFloor ? buildFloorGuidance(currentFloor) : undefined),
-    [currentFloor],
+    () => TOWER_FLOORS.find((entry) => entry.floor === state.run.currentFloor),
+    [state.run.currentFloor],
   );
   const floorPreview = useMemo(
     () => (currentFloor ? buildFloorPreview(currentFloor) : undefined),
-    [currentFloor],
-  );
-  const traitSummaries = useMemo(
-    () => (currentFloor ? getFloorEnemyTraitSummaries(currentFloor) : []),
     [currentFloor],
   );
 
@@ -49,274 +42,193 @@ export function RunPage(): JSX.Element {
       buildDemoBuildSummary({
         archetype: state.archetype,
         skillIds: state.loadout.skillIds,
-        progress: run.progress,
+        progress: state.run.progress,
       }),
-    [run.progress, state.archetype, state.loadout.skillIds],
+    [state.archetype, state.loadout.skillIds, state.run.progress],
   );
 
-  const topSource = useMemo(() => {
-    if (!report) {
-      return undefined;
+  const strengths = useMemo(() => {
+    if (!state.lastReport?.recap) {
+      return [];
     }
-    return [...report.metrics.damageBySource].sort((left, right) => right.total - left.total)[0];
-  }, [report]);
-
-  const eventCounts = useMemo(() => {
-    if (!report?.combatEvents?.length) {
-      return {
-        spread: 0,
-        rupture: 0,
-        cleanse: 0,
-        shield: 0,
-        bossMechanic: 0,
-      };
+    const rows: string[] = [];
+    if (state.lastReport.win) {
+      rows.push(state.lastReport.recap.keyWinOrFailPoint);
     }
-    const events = report.combatEvents;
-    return {
-      spread: events.filter((event) => event.type === "DOT_APPLY" && event.tags?.includes("spread")).length,
-      rupture: events.filter((event) => event.type === "DOT_BURST").length,
-      cleanse: events.filter((event) => event.type === "DOT_CLEANSE").length,
-      shield: events.filter((event) => event.type === "SHIELD_GAIN").length,
-      bossMechanic: events.filter((event) => event.type === "BOSS_MECHANIC").length,
-    };
-  }, [report]);
-
-  const rewardForCurrentReport = useMemo(() => {
-    if (!report) {
-      return undefined;
+    if ((state.lastReport.metrics.firstKillTime ?? 99) <= 10) {
+      rows.push("首杀节奏较快，前期压制力尚可");
     }
-    return [...run.progress.selectedRewards]
-      .reverse()
-      .find((reward) => reward.floor === report.floor);
-  }, [report, run.progress.selectedRewards]);
+    return rows.slice(0, 2);
+  }, [state.lastReport]);
 
-  const deathTime = useMemo(
-    () => report?.combatEvents?.find((event) => event.type === "PLAYER_DEATH")?.time,
-    [report?.combatEvents],
+  const weaknesses = useMemo(() => {
+    if (!state.lastReport) {
+      return [];
+    }
+    const rows: string[] = [];
+    if (!state.lastReport.win) {
+      rows.push(state.lastReport.recap?.reasonSummary ?? state.lastReport.diagnosis[0]?.message ?? "上次挑战失败");
+    }
+    if ((state.lastReport.metrics.firstKillTime ?? 0) > 12) {
+      rows.push("首杀偏慢，清杂节奏可能不足");
+    }
+    if (state.lastReport.metrics.enemyRemainingHpRatio > 0.35) {
+      rows.push("后段收尾不足，残血目标处理偏慢");
+    }
+    return rows.slice(0, 2);
+  }, [state.lastReport]);
+
+  const playback = useMemo(
+    () => (activeReport ? buildPlaybackView(activeReport, playbackTime) : undefined),
+    [activeReport, playbackTime],
   );
 
   const rewardNote = useMemo(() => {
-    if (!report?.win) {
+    if (!activeReport?.win) {
       return "失败无奖励。";
     }
     if (rewardPending) {
-      return "已掉落3选1奖励，选择后生效。";
+      return "已掉落3选1奖励，选择后立即生效。";
     }
-    if (rewardForCurrentReport?.title) {
-      return `已选择：${rewardForCurrentReport.title}`;
+    const selected = [...state.run.progress.selectedRewards]
+      .reverse()
+      .find((entry) => entry.floor === activeReport.floor)?.title;
+    return selected ? `已选择奖励：${selected}` : "本层奖励记录暂不可用。";
+  }, [activeReport, rewardPending, state.run.progress.selectedRewards]);
+
+  useEffect(() => {
+    if (screenState !== "battling" || !activeReport || paused) {
+      return;
     }
-    return "本层奖励记录暂不可用。";
-  }, [report?.win, rewardForCurrentReport?.title, rewardPending]);
+    const tickMs = 120;
+    const timer = window.setInterval(() => {
+      setPlaybackTime((prev) => {
+        const next = prev + (tickMs / 1000) * playbackSpeed;
+        return Math.min(activeReport.metrics.duration, next);
+      });
+    }, tickMs);
 
-  return (
-    <div className="grid gap-4">
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex flex-wrap items-center justify-between gap-2">
-            <span>最小可玩爬塔演示</span>
-            <Badge variant="outline">
-              第 {run.currentFloor} / {DEMO_RUN_TARGET_FLOOR} 层
-            </Badge>
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3 text-sm">
-          <p className="text-muted-foreground">
-            {"开始新局 -> 挑战楼层 -> 胜/负 -> 选择奖励 -> 应用奖励 -> 下一层"}
-          </p>
-          <div className="flex flex-wrap gap-2">
-            <Button size="sm" onClick={startNewRun}>
-              开始新局
-            </Button>
-            <Button size="sm" disabled={!canBattle} onClick={continueRun}>
-              挑战第 {run.currentFloor} 层
-            </Button>
-            <Button asChild size="sm" variant="secondary">
-              <Link to="/build">打开构筑页</Link>
-            </Button>
-            <Button asChild size="sm" variant="secondary">
-              <Link to="/report">查看完整战报</Link>
-            </Button>
-            {runEnded ? (
-              <Button asChild size="sm" variant="secondary">
-                <Link to="/run-summary">查看结算</Link>
-              </Button>
-            ) : null}
-          </div>
-          <p className="text-xs text-muted-foreground">
-            状态：{runStatusLabel(run.status)} | 已选奖励：{run.progress.selectedRewards.length}
-          </p>
-        </CardContent>
-      </Card>
+    return () => window.clearInterval(timer);
+  }, [activeReport, paused, playbackSpeed, screenState]);
 
-      <div className="grid gap-4 lg:grid-cols-2">
-        <Card>
-          <CardHeader>
-            <CardTitle>当前构筑</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-2 text-sm">
-            <p>
-              流派：<span className="font-semibold">{buildSummary.archetypeLabel}</span> | 路线：{" "}
-              <span className="font-semibold">{buildSummary.routeLabel}</span>
-            </p>
-            <p>核心技能：{buildSummary.coreSkills.join(" / ")}</p>
-            <p>关键加成：{buildSummary.keyBonuses.join("，")}</p>
-            <p className="text-muted-foreground">构筑摘要：{buildSummary.summaryText}</p>
-          </CardContent>
-        </Card>
+  useEffect(() => {
+    if (screenState !== "battling" || !activeReport) {
+      return;
+    }
+    if (playbackTime < activeReport.metrics.duration) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setScreenState("resolved");
+      setPaused(false);
+    }, 320);
+    return () => window.clearTimeout(timer);
+  }, [activeReport, playbackTime, screenState]);
 
-        {floorPreview ? (
-          <FloorPreviewCard preview={floorPreview} compact />
-        ) : (
-          <Card>
-            <CardHeader>
-              <CardTitle>当前楼层 / 敌人快照</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-2 text-sm">
-              {currentFloor ? (
-                <>
-                  <p>
-                    第 {currentFloor.floor} 层 | {tPressure(currentFloor.pressure)} |{" "}
-                    {currentFloor.boss ? "首领层" : "普通层"}
-                  </p>
-                  <div className="grid grid-cols-2 gap-2">
-                    <MiniStat label="敌人数" value={String(currentFloor.enemyCount)} />
-                    <MiniStat label="敌方速度(均值)" value={currentFloor.enemySpeed.toFixed(2)} />
-                    <MiniStat label="敌方生命(均值)" value={String(currentFloor.enemyHp)} />
-                    <MiniStat label="敌方攻击(均值)" value={String(currentFloor.enemyAtk)} />
-                  </div>
-                  {traitSummaries.length > 0 ? (
-                    <div className="rounded-md border bg-background p-2">
-                      <p className="text-xs text-muted-foreground">敌人特性摘要</p>
-                      {traitSummaries.map((trait) => (
-                        <p key={`${trait.template}-${trait.count}`} className="text-xs">
-                          - {trait.title} x{trait.count}: {trait.gameplay}
-                        </p>
-                      ))}
-                    </div>
-                  ) : null}
-                  {floorGuidance ? (
-                    <p className="text-xs text-muted-foreground">
-                      本层重点：{floorGuidance.primaryObjective}
-                    </p>
-                  ) : null}
-                </>
-              ) : (
-                <p className="text-muted-foreground">暂无楼层数据。</p>
-              )}
-            </CardContent>
-          </Card>
-        )}
-      </div>
+  const handleStartBattle = () => {
+    const report = continueRun();
+    if (!report) {
+      return;
+    }
+    setActiveReport(report);
+    setPlaybackTime(0);
+    setPlaybackSpeed(1);
+    setPaused(false);
+    setShowDetailRecap(false);
+    setScreenState("battling");
+  };
 
-      {rewardPending && run.pendingRewards && report?.win ? (
-        <RewardSelectionCard floor={report.floor} rewards={run.pendingRewards} onSelect={selectRunReward} />
-      ) : null}
+  const handleSkipPlayback = () => {
+    if (!activeReport) {
+      return;
+    }
+    setPlaybackTime(activeReport.metrics.duration);
+    setScreenState("resolved");
+    setPaused(false);
+  };
 
-      {report ? (
-        <>
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center justify-between">
-                <span>战斗结果</span>
-                <Button size="sm" variant="ghost" onClick={() => setShowDebug((value) => !value)}>
-                  {showDebug ? "隐藏调试层" : "显示调试层"}
-                </Button>
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              <div className="grid gap-2 text-sm md:grid-cols-2 lg:grid-cols-4">
-                <MiniStat label="结果" value={report.win ? "胜利" : "失败"} />
-                <MiniStat label="战斗时长" value={formatSeconds(report.metrics.duration)} />
-                <MiniStat label="总伤害" value={formatNumber(report.metrics.totalDamage)} />
-                <MiniStat label="最高伤害技能" value={topSource?.sourceName ?? "-"} />
-                <MiniStat label="DOT伤害占比" value={formatPercent(report.metrics.dotDamageRatio)} />
-                <MiniStat
-                  label="首领机制"
-                  value={eventCounts.bossMechanic > 0 ? `已触发(${eventCounts.bossMechanic})` : "未触发"}
-                />
-                <MiniStat
-                  label="本层奖励"
-                  value={
-                    rewardPending && report.win
-                      ? "待选择"
-                      : rewardForCurrentReport?.title ?? (report.win ? "暂无记录" : "失败无奖励")
-                  }
-                />
-                <MiniStat
-                  label="首杀时间"
-                  value={report.metrics.firstKillTime === null ? "-" : `${report.metrics.firstKillTime.toFixed(1)}s`}
-                />
-              </div>
+  const handlePrepareNext = () => {
+    setScreenState("preparing");
+    setShowDetailRecap(false);
+    setPaused(false);
+    setPlaybackTime(0);
+  };
 
-              <div className="flex flex-wrap gap-2">
-                {!report.win ? (
-                  <Button size="sm" onClick={startNewRun}>
-                    结束并重开
-                  </Button>
-                ) : rewardPending ? (
-                  <Badge variant="secondary">请先选择1个奖励再继续。</Badge>
-                ) : runEnded ? (
-                  <Button asChild size="sm">
-                    <Link to="/run-summary">查看结算</Link>
-                  </Button>
-                ) : (
-                  <Button size="sm" onClick={continueRun}>
-                    下一层（第 {run.currentFloor} 层）
-                  </Button>
-                )}
-              </div>
+  const handleRestart = () => {
+    startNewRun();
+    setActiveReport(undefined);
+    setScreenState("preparing");
+    setPlaybackTime(0);
+    setPlaybackSpeed(1);
+    setPaused(false);
+    setShowDetailRecap(false);
+  };
 
-              {showDebug ? (
-                <div className="grid gap-3 lg:grid-cols-2">
-                  <div className="rounded-md border bg-background p-3 text-xs">
-                    <p className="mb-1 text-muted-foreground">关键触发统计</p>
-                    <p>扩散: {eventCounts.spread}</p>
-                    <p>引爆: {eventCounts.rupture}</p>
-                    <p>净化: {eventCounts.cleanse}</p>
-                    <p>护盾获取: {eventCounts.shield}</p>
-                    <p>首领机制: {eventCounts.bossMechanic}</p>
-                  </div>
-                  <div className="max-h-[260px] overflow-auto rounded-md border bg-background p-3 text-xs">
-                    <p className="mb-1 text-muted-foreground">战斗日志（前20行）</p>
-                    {report.combatLog.slice(0, 20).map((line, index) => (
-                      <p key={`${line}-${index}`} className="font-mono">
-                        {line}
-                      </p>
-                    ))}
-                  </div>
-                </div>
-              ) : null}
-            </CardContent>
-          </Card>
+  const handleSelectReward = (optionId: string) => {
+    selectRunReward(optionId);
+    setScreenState("preparing");
+    setShowDetailRecap(false);
+  };
 
-          {report.recap ? <BattleRecapCard recap={report.recap} rewardNote={rewardNote} /> : null}
-          {report.timeline && report.timeline.length > 0 ? (
-            <KeyTimelineCard entries={report.timeline} deathTime={deathTime} />
-          ) : null}
-        </>
-      ) : null}
-    </div>
-  );
-}
-
-function MiniStat({ label, value }: { label: string; value: string }): JSX.Element {
-  return (
-    <div className="rounded-md border bg-background p-2">
-      <p className="text-[11px] text-muted-foreground">{label}</p>
-      <p className="text-sm font-semibold">{value}</p>
-    </div>
-  );
-}
-
-function runStatusLabel(status: string): string {
-  switch (status) {
-    case "in_progress":
-      return "进行中";
-    case "reward_pending":
-      return "待选奖励";
-    case "over":
-      return "已结束";
-    default:
-      return status;
+  if (screenState === "preparing") {
+    return (
+      <PreBattleScreen
+        floorPreview={floorPreview}
+        buildSummary={buildSummary}
+        canStart={canStart}
+        strengths={strengths}
+        weaknesses={weaknesses}
+        onStartBattle={handleStartBattle}
+        onOpenBuild={() => navigate("/build")}
+        onOpenReport={() => navigate("/report")}
+      />
+    );
   }
+
+  if (screenState === "battling" && activeReport && playback) {
+    return (
+      <InBattleScreen
+        report={activeReport}
+        playback={playback}
+        status={paused ? "暂停" : "进行中"}
+        speed={playbackSpeed}
+        canPause={!paused}
+        onTogglePause={() => setPaused((value) => !value)}
+        onSetSpeed={setPlaybackSpeed}
+        onSkip={handleSkipPlayback}
+      />
+    );
+  }
+
+  if (screenState === "resolved" && activeReport) {
+    return (
+      <PostBattleScreen
+        report={activeReport}
+        rewardPending={Boolean(rewardPending)}
+        pendingRewards={state.run.pendingRewards}
+        rewardNote={rewardNote}
+        showDetails={showDetailRecap}
+        onToggleDetails={() => setShowDetailRecap((value) => !value)}
+        onSelectReward={handleSelectReward}
+        onRetry={handleRestart}
+        onBackBuild={() => navigate("/build")}
+        onPrepareNext={handlePrepareNext}
+        onOpenRunSummary={() => navigate("/run-summary")}
+        runEnded={state.run.isOver}
+      />
+    );
+  }
+
+  return (
+    <PreBattleScreen
+      floorPreview={floorPreview}
+      buildSummary={buildSummary}
+      canStart={canStart}
+      strengths={strengths}
+      weaknesses={weaknesses}
+      onStartBattle={handleStartBattle}
+      onOpenBuild={() => navigate("/build")}
+      onOpenReport={() => navigate("/report")}
+    />
+  );
 }

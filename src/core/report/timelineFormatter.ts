@@ -7,8 +7,10 @@ interface BuildTimelineInput {
 
 const PRIMARY_EVENT_TYPES: CombatEventType[] = [
   "SKILL_CAST",
+  "DOT_APPLY",
   "DOT_BURST",
   "DOT_CLEANSE",
+  "BUFF_GAIN",
   "BOSS_MECHANIC",
   "ENEMY_HEAVY_HIT",
   "ENEMY_HIT",
@@ -16,7 +18,6 @@ const PRIMARY_EVENT_TYPES: CombatEventType[] = [
   "SHIELD_LOSS",
   "PROC_TRIGGER",
   "ENEMY_SUMMON",
-  "BUFF_GAIN",
   "DEBUFF_APPLY",
   "ENEMY_KILL",
   "PLAYER_DEATH",
@@ -52,6 +53,14 @@ function shouldIncludeEvent(event: CombatEvent, heavyHitThreshold: number): bool
     return false;
   }
 
+  if (event.type === "DOT_APPLY") {
+    const tags = event.tags ?? [];
+    return tags.includes("spread") || tags.includes("first_cover");
+  }
+  if (event.type === "BUFF_GAIN") {
+    const tags = event.tags ?? [];
+    return tags.includes("dot_milestone") || tags.includes("dot_loop_ready") || tags.includes("dot_burst_window");
+  }
   if (event.type === "ENEMY_HIT") {
     return (event.amount ?? 0) >= heavyHitThreshold;
   }
@@ -85,6 +94,9 @@ function severityOf(event: CombatEvent): BattleTimelineEntry["severity"] {
   if (event.type === "PLAYER_DEATH" || event.type === "BOSS_MECHANIC") {
     return "critical";
   }
+  if (event.type === "BUFF_GAIN" && (event.tags ?? []).includes("dot_burst_window")) {
+    return "critical";
+  }
   if (
     event.type === "ENEMY_HEAVY_HIT" ||
     event.type === "DOT_CLEANSE" ||
@@ -100,10 +112,14 @@ function typeLabelOf(type: CombatEventType): string {
   switch (type) {
     case "SKILL_CAST":
       return "技能";
+    case "DOT_APPLY":
+      return "铺层";
     case "DOT_BURST":
       return "引爆";
     case "DOT_CLEANSE":
       return "净化";
+    case "BUFF_GAIN":
+      return "阶段";
     case "BOSS_MECHANIC":
       return "机制";
     case "ENEMY_HEAVY_HIT":
@@ -118,8 +134,6 @@ function typeLabelOf(type: CombatEventType): string {
       return "触发";
     case "ENEMY_SUMMON":
       return "召唤";
-    case "BUFF_GAIN":
-      return "增益";
     case "DEBUFF_APPLY":
       return "减益";
     case "ENEMY_KILL":
@@ -137,12 +151,23 @@ function typeLabelOf(type: CombatEventType): string {
 
 function summaryTextOf(event: CombatEvent): string {
   const amount = event.amount ?? event.value;
+  const tags = event.tags ?? [];
   switch (event.type) {
     case "SKILL_CAST":
       return `你施放【${event.sourceName ?? "技能"}】`;
+    case "DOT_APPLY": {
+      const target = event.targetName ?? "目标";
+      const stacksAfter = Number(event.metadata?.stacksAfter ?? event.meta?.stacksAfter ?? 0);
+      if (tags.includes("spread")) {
+        return `${event.sourceName ?? "技能"} 扩散DOT至 ${target}${stacksAfter > 0 ? `（${stacksAfter}层）` : ""}`;
+      }
+      return `${event.sourceName ?? "技能"} 对 ${target} 附加DOT${stacksAfter > 0 ? `（${stacksAfter}层）` : ""}`;
+    }
     case "DOT_BURST":
-      return `DOT引爆造成 ${Math.round(amount ?? 0)} 点伤害`;
+      return `引爆触发，造成 ${Math.round(amount ?? 0)} 点伤害`;
     case "DOT_CLEANSE":
+      return event.summary;
+    case "BUFF_GAIN":
       return event.summary;
     case "BOSS_MECHANIC":
       return `首领机制触发：${event.summary}`;
@@ -158,11 +183,10 @@ function summaryTextOf(event: CombatEvent): string {
       return `触发伤害 ${Math.round(amount ?? 0)}（${event.sourceName ?? "效果"}）`;
     case "ENEMY_SUMMON":
       return event.summary;
-    case "BUFF_GAIN":
     case "DEBUFF_APPLY":
       return event.summary;
     case "ENEMY_KILL":
-      return event.summary;
+      return tags.includes("harvest") ? `收割击杀：${event.summary}` : event.summary;
     case "PLAYER_DEATH":
       return "你已被击败";
     case "BATTLE_END":

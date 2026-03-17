@@ -58,6 +58,13 @@ interface RuntimeState {
   nextBasicAt: number;
 }
 
+interface DotFlowState {
+  keyStackThreshold: number;
+  keyStackTargets: Set<number>;
+  loopReadyAnnounced: boolean;
+  burstWindowAnnounced: boolean;
+}
+
 interface DamagePoint {
   time: number;
   amount: number;
@@ -98,6 +105,11 @@ const ENEMY_TRAIT_TUNING = {
   bossRageSpeedMultiplier: 1.12,
 };
 
+const DOT_FLOW_TUNING = {
+  keyStackThreshold: 4,
+  loopReadyCoverage: 2,
+};
+
 export function runAutoBattle(input: BattleInput): SimulationOutput {
   const loadoutSeed = [
     input.loadout.weapon?.id ?? "none",
@@ -113,6 +125,12 @@ export function runAutoBattle(input: BattleInput): SimulationOutput {
   const passiveRuntime = createPassiveRuntime(input.loadout);
   const enemies = buildEnemiesForFloor(input);
   const enemyTraitRuntime = buildEnemyTraitRuntime(enemies);
+  const dotFlowState: DotFlowState = {
+    keyStackThreshold: DOT_FLOW_TUNING.keyStackThreshold,
+    keyStackTargets: new Set<number>(),
+    loopReadyAnnounced: false,
+    burstWindowAnnounced: false,
+  };
   const totalEnemyHpPool = Math.max(
     1,
     enemies.reduce((sum, enemy) => sum + enemy.maxHp, 0),
@@ -279,16 +297,19 @@ export function runAutoBattle(input: BattleInput): SimulationOutput {
             state.firstKillTime = time;
           }
           const hadDotsOnKill = getDotStacks(enemy) > 0;
+          const killSummary = hadDotsOnKill
+            ? `毒蚀收割：敌人 ${enemy.id} 倒下`
+            : `敌人 ${enemy.id} 被 ${dot.name} 击败`;
           pushCombatEvent(combatEvents, combatLog, {
             time,
             type: "ENEMY_KILL",
             category: "offense",
-            summary: `敌人 ${enemy.id} 被 ${dot.name} 击败`,
+            summary: killSummary,
             sourceId: dot.sourceId,
             sourceName: dot.sourceName,
             targetId: enemy.id,
             targetName: `敌人${enemy.id}`,
-            tags: ["kill", "dot"],
+            tags: hadDotsOnKill ? ["kill", "dot", "harvest"] : ["kill", "dot"],
           });
           if (hadDotsOnKill) {
             applyDotKillStabilizer({
@@ -459,6 +480,7 @@ export function runAutoBattle(input: BattleInput): SimulationOutput {
               state.firstKillTime = killAt;
             }
           },
+          dotFlowState,
           outgoingDamagePoints,
         });
       }
@@ -716,6 +738,7 @@ interface CastSkillArgs {
   setCooldown: (skillId: string, value: number) => void;
   reduceAllCooldownsBy: (value: number) => void;
   onFirstKill: (time: number) => void;
+  dotFlowState: DotFlowState;
   outgoingDamagePoints: DamagePoint[];
 }
 
@@ -742,6 +765,7 @@ function castSkill(args: CastSkillArgs): void {
     setCooldown,
     reduceAllCooldownsBy,
     onFirstKill,
+    dotFlowState,
     outgoingDamagePoints,
   } = args;
 
@@ -764,7 +788,7 @@ function castSkill(args: CastSkillArgs): void {
     sourceId: skill.id,
     sourceName: skill.name,
     amount: skill.cost,
-    tags: ["cast"],
+    tags: ["cast", ...skill.tags],
   });
 
   const playerResourceRatio = clamp(currentResource / Math.max(1, input.finalStats.resourceMax), 0, 1);
@@ -891,16 +915,17 @@ function castSkill(args: CastSkillArgs): void {
 
       if (dealt > 0 && target.hp <= 0) {
         onFirstKill(time);
+        const harvestKill = targetDotStacksBeforeHit > 0;
         pushCombatEvent(combatEvents, combatLog, {
           time,
           type: "ENEMY_KILL",
           category: "offense",
-          summary: `敌人 ${target.id} 被 ${skill.name} 击败`,
+          summary: harvestKill ? `${skill.name} 收割击杀（敌${target.id}）` : `敌人 ${target.id} 被 ${skill.name} 击败`,
           sourceId: skill.id,
           sourceName: skill.name,
           targetId: target.id,
           targetName: `敌人${target.id}`,
-          tags: ["kill", "skill"],
+          tags: harvestKill ? ["kill", "skill", "harvest"] : ["kill", "skill"],
         });
         if (targetDotStacksBeforeHit > 0) {
           applyDotKillStabilizer({
@@ -920,24 +945,42 @@ function castSkill(args: CastSkillArgs): void {
     const targetsForDot = skill.tags.includes("aoe") ? aliveEnemies(enemies) : aliveEnemies(enemies).slice(0, 1);
     const rawDot = input.finalStats.atk * skill.dot.tickRatio * (1 + input.finalStats.dotPower);
     for (const target of targetsForDot) {
+      const stacksBefore = getDotStacks(target);
       const adjusted = reduceEnemyMitigation(rawDot * pressureDamageModifier("dot", input.floor.pressure), target);
       applyDotToEnemy({ enemy: target, skill, now: time, damagePerTick: adjusted, extraStacks });
+      const stacksAfter = getDotStacks(target);
+      const stackDelta = Math.max(0, stacksAfter - stacksBefore);
+      const isFirstCover = stacksBefore <= 0 && stacksAfter > 0;
       pushCombatEvent(combatEvents, combatLog, {
         time,
         type: "DOT_APPLY",
         category: "offense",
-        summary: `${skill.name} 施加 DOT（敌${target.id}）`,
+        summary: `${skill.name} 附加 DOT x${Math.max(1, stackDelta)}（敌${target.id}）`,
         sourceId: skill.id,
         sourceName: skill.name,
         targetId: target.id,
         targetName: `敌人${target.id}`,
         amount: adjusted,
-        tags: ["dot", "apply"],
+        tags: isFirstCover ? ["dot", "apply", "first_cover"] : ["dot", "apply"],
+        metadata: {
+          stacksBefore,
+          stacksAfter,
+          stackDelta,
+          keyStackThreshold: dotFlowState.keyStackThreshold,
+        },
+      });
+      maybeEmitDotKeyStackEvent({
+        enemy: target,
+        time,
+        dotFlowState,
+        combatEvents,
+        combatLog,
       });
     }
     if (input.archetype === "dot" && skill.tags.includes("starter") && !skill.tags.includes("aoe")) {
       const spreadTarget = selectSpreadTarget(enemies, targetsForDot[0]?.id);
       if (spreadTarget) {
+        const spreadBefore = getDotStacks(spreadTarget);
         const spreadAdjusted =
           reduceEnemyMitigation(rawDot * pressureDamageModifier("dot", input.floor.pressure), spreadTarget) *
           DOT_ROUTE_TUNING.starterSpreadTickMultiplier;
@@ -948,17 +991,32 @@ function castSkill(args: CastSkillArgs): void {
           damagePerTick: spreadAdjusted,
           extraStacks: Math.max(0, extraStacks - 1),
         });
+        const spreadAfter = getDotStacks(spreadTarget);
+        const spreadDelta = Math.max(0, spreadAfter - spreadBefore);
         pushCombatEvent(combatEvents, combatLog, {
           time,
           type: "DOT_APPLY",
           category: "offense",
-          summary: `${skill.name} 扩散 DOT（敌${spreadTarget.id}）`,
+          summary: `${skill.name} DOT扩散 x${Math.max(1, spreadDelta)}（敌${spreadTarget.id}）`,
           sourceId: skill.id,
           sourceName: skill.name,
           targetId: spreadTarget.id,
           targetName: `敌人${spreadTarget.id}`,
           amount: spreadAdjusted,
-          tags: ["dot", "spread"],
+          tags: ["dot", "apply", "spread"],
+          metadata: {
+            stacksBefore: spreadBefore,
+            stacksAfter: spreadAfter,
+            stackDelta: spreadDelta,
+            keyStackThreshold: dotFlowState.keyStackThreshold,
+          },
+        });
+        maybeEmitDotKeyStackEvent({
+          enemy: spreadTarget,
+          time,
+          dotFlowState,
+          combatEvents,
+          combatLog,
         });
       }
     }
@@ -979,6 +1037,7 @@ function castSkill(args: CastSkillArgs): void {
           break;
         }
         used.add(extraTarget.id);
+        const extraBefore = getDotStacks(extraTarget);
         const extraAdjusted =
           reduceEnemyMitigation(rawDot * pressureDamageModifier("dot", input.floor.pressure), extraTarget) *
           weakRatio;
@@ -989,20 +1048,43 @@ function castSkill(args: CastSkillArgs): void {
           damagePerTick: extraAdjusted,
           extraStacks: Math.max(0, extraStacks - 1),
         });
+        const extraAfter = getDotStacks(extraTarget);
+        const extraDelta = Math.max(0, extraAfter - extraBefore);
         pushCombatEvent(combatEvents, combatLog, {
           time,
           type: "DOT_APPLY",
           category: "offense",
-          summary: `${skill.name} 奖励扩散 DOT（敌${extraTarget.id}）`,
+          summary: `${skill.name} 奖励扩散 DOT x${Math.max(1, extraDelta)}（敌${extraTarget.id}）`,
           sourceId: skill.id,
           sourceName: skill.name,
           targetId: extraTarget.id,
           targetName: `敌人${extraTarget.id}`,
           amount: extraAdjusted,
           tags: ["dot", "spread", "reward"],
+          metadata: {
+            stacksBefore: extraBefore,
+            stacksAfter: extraAfter,
+            stackDelta: extraDelta,
+            keyStackThreshold: dotFlowState.keyStackThreshold,
+          },
+        });
+        maybeEmitDotKeyStackEvent({
+          enemy: extraTarget,
+          time,
+          dotFlowState,
+          combatEvents,
+          combatLog,
         });
       }
     }
+    maybeEmitDotLoopReadyEvent({
+      archetype: input.archetype,
+      enemies,
+      time,
+      dotFlowState,
+      combatEvents,
+      combatLog,
+    });
     if (input.archetype === "dot") {
       gainResource(DOT_ROUTE_TUNING.dotCycleRefund, "DOT循环回能");
     }
@@ -1016,6 +1098,28 @@ function castSkill(args: CastSkillArgs): void {
     if (target) {
       const burstBonus = input.loadout.core?.mechanicModifiers?.dotBurstBonus ?? 0;
       const targetDotStacks = getDotStacks(target);
+      if (
+        input.archetype === "dot" &&
+        !dotFlowState.burstWindowAnnounced &&
+        targetDotStacks >= dotFlowState.keyStackThreshold
+      ) {
+        dotFlowState.burstWindowAnnounced = true;
+        pushCombatEvent(combatEvents, combatLog, {
+          time,
+          type: "BUFF_GAIN",
+          category: "offense",
+          summary: "引爆窗口打开：可执行转化收割",
+          sourceId: skill.id,
+          sourceName: skill.name,
+          targetId: target.id,
+          targetName: `敌人${target.id}`,
+          tags: ["dot", "dot_burst_window", "highlight"],
+          metadata: {
+            targetDotStacks,
+            keyStackThreshold: dotFlowState.keyStackThreshold,
+          },
+        });
+      }
       const ruptureBurstBonus =
         skill.id === "rupture_bloom"
           ? Math.min(
@@ -1043,13 +1147,17 @@ function castSkill(args: CastSkillArgs): void {
           time,
           type: "DOT_BURST",
           category: "offense",
-          summary: `${skill.name} 引爆 DOT ${Math.round(dealt)}`,
+          summary: `${skill.name} 引爆触发，造成 ${Math.round(dealt)}`,
           amount: dealt,
           sourceId: skill.id,
           sourceName: skill.name,
           targetId: target.id,
           targetName: `敌人${target.id}`,
           tags: ["dot", "burst"],
+          metadata: {
+            targetDotStacks,
+            keyStackThreshold: dotFlowState.keyStackThreshold,
+          },
         });
         if (input.archetype === "dot" && skill.id === "rupture_bloom" && targetDotStacks > 0) {
           const refund = targetDotStacks * DOT_ROUTE_TUNING.dotBurstRefundPerStack;
@@ -1063,12 +1171,12 @@ function castSkill(args: CastSkillArgs): void {
           time,
           type: "ENEMY_KILL",
           category: "offense",
-          summary: `敌人 ${target.id} 被 ${skill.name} 引爆击败`,
+          summary: `${skill.name} 收割击杀（敌${target.id}）`,
           sourceId: skill.id,
           sourceName: skill.name,
           targetId: target.id,
           targetName: `敌人${target.id}`,
-          tags: ["kill", "burst"],
+          tags: ["kill", "burst", "harvest"],
         });
         applyDotKillStabilizer({
           input,
@@ -1523,6 +1631,74 @@ function computeDotCoverageMitigation(archetype: BattleInput["archetype"], enemi
     DOT_ROUTE_TUNING.coverageMitigationCap,
     covered * DOT_ROUTE_TUNING.coverageMitigationPerEnemy,
   );
+}
+
+interface EmitDotKeyStackArgs {
+  enemy: EnemyState;
+  time: number;
+  dotFlowState: DotFlowState;
+  combatEvents: CombatEvent[];
+  combatLog: string[];
+}
+
+function maybeEmitDotKeyStackEvent(args: EmitDotKeyStackArgs): void {
+  const { enemy, time, dotFlowState, combatEvents, combatLog } = args;
+  const totalStacks = getDotStacks(enemy);
+  if (totalStacks < dotFlowState.keyStackThreshold || dotFlowState.keyStackTargets.has(enemy.id)) {
+    return;
+  }
+  dotFlowState.keyStackTargets.add(enemy.id);
+  pushCombatEvent(combatEvents, combatLog, {
+    time,
+    type: "BUFF_GAIN",
+    category: "offense",
+    summary: `敌${enemy.id} DOT达到关键层数（${totalStacks}层）`,
+    sourceId: "dot_flow",
+    sourceName: "DOT循环",
+    targetId: enemy.id,
+    targetName: `敌人${enemy.id}`,
+    tags: ["dot", "dot_milestone", "highlight"],
+    metadata: {
+      targetDotStacks: totalStacks,
+      keyStackThreshold: dotFlowState.keyStackThreshold,
+    },
+  });
+}
+
+interface EmitDotLoopReadyArgs {
+  archetype: BattleInput["archetype"];
+  enemies: EnemyState[];
+  time: number;
+  dotFlowState: DotFlowState;
+  combatEvents: CombatEvent[];
+  combatLog: string[];
+}
+
+function maybeEmitDotLoopReadyEvent(args: EmitDotLoopReadyArgs): void {
+  const { archetype, enemies, time, dotFlowState, combatEvents, combatLog } = args;
+  if (archetype !== "dot" || dotFlowState.loopReadyAnnounced) {
+    return;
+  }
+  const living = enemies.filter((enemy) => enemy.hp > 0);
+  const covered = living.filter((enemy) => getDotStacks(enemy) > 0).length;
+  const highStackTargets = living.filter((enemy) => getDotStacks(enemy) >= dotFlowState.keyStackThreshold).length;
+  if (covered < DOT_FLOW_TUNING.loopReadyCoverage && highStackTargets <= 0) {
+    return;
+  }
+  dotFlowState.loopReadyAnnounced = true;
+  pushCombatEvent(combatEvents, combatLog, {
+    time,
+    type: "BUFF_GAIN",
+    category: "offense",
+    summary: "DOT循环成型：压血节奏建立",
+    sourceId: "dot_flow",
+    sourceName: "DOT循环",
+    tags: ["dot", "dot_loop_ready", "highlight"],
+    metadata: {
+      coveredEnemies: covered,
+      highStackTargets,
+    },
+  });
 }
 
 function selectSpreadTarget(
