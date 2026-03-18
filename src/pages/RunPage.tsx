@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { InBattleScreen } from "@/components/battle/InBattleScreen";
 import { PostBattleScreen } from "@/components/battle/PostBattleScreen";
 import { PreBattleScreen } from "@/components/battle/PreBattleScreen";
-import type { BattleReport } from "@/core/battle/types";
+import type { BattleReport, RunRewardOption } from "@/core/battle/types";
 import { buildDemoBuildSummary } from "@/core/build/demoBuildSummary";
 import { buildPlaybackView } from "@/core/report/playbackView";
 import { buildFloorPreview } from "@/core/tower/floorPreview";
@@ -24,6 +24,14 @@ export function RunPage(): JSX.Element {
   const [playbackSpeed, setPlaybackSpeed] = useState<1 | 2>(1);
   const [paused, setPaused] = useState(false);
   const [showDetailRecap, setShowDetailRecap] = useState(false);
+  const [recentReward, setRecentReward] = useState<
+    | {
+        title: string;
+        summary: string;
+        routeHint?: string;
+      }
+    | undefined
+  >(undefined);
 
   const canStart = state.run.status === "in_progress" && !state.run.isOver;
   const rewardPending = state.run.status === "reward_pending" && activeReport?.win;
@@ -131,6 +139,7 @@ export function RunPage(): JSX.Element {
       return;
     }
     setActiveReport(report);
+    setRecentReward(undefined);
     setPlaybackTime(0);
     setPlaybackSpeed(1);
     setPaused(false);
@@ -157,6 +166,7 @@ export function RunPage(): JSX.Element {
   const handleRestart = () => {
     startNewRun();
     setActiveReport(undefined);
+    setRecentReward(undefined);
     setScreenState("preparing");
     setPlaybackTime(0);
     setPlaybackSpeed(1);
@@ -165,7 +175,15 @@ export function RunPage(): JSX.Element {
   };
 
   const handleSelectReward = (optionId: string) => {
+    const selected = state.run.pendingRewards?.find((entry) => entry.id === optionId);
     selectRunReward(optionId);
+    if (selected) {
+      setRecentReward({
+        title: selected.title,
+        summary: buildRewardAppliedSummary(selected),
+        routeHint: selected.routeHint,
+      });
+    }
     setScreenState("preparing");
     setShowDetailRecap(false);
   };
@@ -175,6 +193,7 @@ export function RunPage(): JSX.Element {
       <PreBattleScreen
         floorPreview={floorPreview}
         buildSummary={buildSummary}
+        recentReward={recentReward}
         canStart={canStart}
         strengths={strengths}
         weaknesses={weaknesses}
@@ -223,6 +242,7 @@ export function RunPage(): JSX.Element {
     <PreBattleScreen
       floorPreview={floorPreview}
       buildSummary={buildSummary}
+      recentReward={recentReward}
       canStart={canStart}
       strengths={strengths}
       weaknesses={weaknesses}
@@ -231,4 +251,39 @@ export function RunPage(): JSX.Element {
       onOpenReport={() => navigate("/report")}
     />
   );
+}
+
+function buildRewardAppliedSummary(option: RunRewardOption): string {
+  const effects: string[] = [];
+  const stats = option.effect.stats;
+  if (stats) {
+    if ((stats.dotPower ?? 0) > 0) {
+      effects.push(`DOT+${Math.round((stats.dotPower ?? 0) * 100)}%`);
+    }
+    if ((stats.crit ?? 0) > 0) {
+      effects.push(`暴击+${Math.round((stats.crit ?? 0) * 100)}%`);
+    }
+    if ((stats.procPower ?? 0) > 0) {
+      effects.push(`触发+${Math.round((stats.procPower ?? 0) * 100)}%`);
+    }
+    if ((stats.resourceRegen ?? 0) > 0) {
+      effects.push(`回能+${(stats.resourceRegen ?? 0).toFixed(1)}`);
+    }
+    if ((stats.hp ?? 0) > 0) {
+      effects.push(`生命+${Math.round(stats.hp ?? 0)}`);
+    }
+    if ((stats.cdr ?? 0) > 0) {
+      effects.push(`冷却-${Math.round((stats.cdr ?? 0) * 100)}%`);
+    }
+  }
+  if (option.effect.skillUpgrade) {
+    effects.push(`技能强化：${option.effect.skillUpgrade.skillId}`);
+  }
+  if (option.effect.passiveEffect) {
+    effects.push(`机制：${option.effect.passiveEffect.id}`);
+  }
+  if (effects.length <= 0) {
+    return option.description;
+  }
+  return `已生效：${effects.slice(0, 3).join("，")}`;
 }

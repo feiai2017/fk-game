@@ -7,6 +7,11 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 interface PreBattleScreenProps {
   floorPreview?: FloorPreview;
   buildSummary: DemoBuildSummary;
+  recentReward?: {
+    title: string;
+    summary: string;
+    routeHint?: string;
+  };
   canStart: boolean;
   strengths: string[];
   weaknesses: string[];
@@ -19,6 +24,7 @@ export function PreBattleScreen(props: PreBattleScreenProps): JSX.Element {
   const {
     floorPreview,
     buildSummary,
+    recentReward,
     canStart,
     strengths,
     weaknesses,
@@ -38,6 +44,15 @@ export function PreBattleScreen(props: PreBattleScreenProps): JSX.Element {
         <CardContent className="space-y-1 text-sm">
           <p>{floorPreview?.subtitle ?? "本层信息尚未就绪。"}</p>
           <p className="text-xs text-amber-700">危险提示：{floorPreview?.dangerHint ?? "优先观察首杀与承伤。"}</p>
+          {recentReward ? (
+            <div className="rounded-md border border-emerald-300/60 bg-emerald-50 p-2">
+              <p className="text-xs font-semibold text-emerald-800">上层奖励已生效：{recentReward.title}</p>
+              <p className="text-xs text-emerald-700">{recentReward.summary}</p>
+              {recentReward.routeHint ? (
+                <p className="text-xs text-emerald-700/90">路线提示：{recentReward.routeHint}</p>
+              ) : null}
+            </div>
+          ) : null}
         </CardContent>
       </Card>
 

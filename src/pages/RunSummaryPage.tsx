@@ -29,7 +29,7 @@ export function RunSummaryPage(): JSX.Element {
     <div className="grid gap-4">
       <Card>
         <CardHeader>
-          <CardTitle>短流程结算（第10层）</CardTitle>
+          <CardTitle>终局总结 · 第10层短程演示</CardTitle>
         </CardHeader>
         <CardContent className="grid gap-2 text-sm md:grid-cols-3">
           <Stat label="结果" value={summary.outcome === "victory" ? "通关" : "失败"} />
@@ -39,6 +39,7 @@ export function RunSummaryPage(): JSX.Element {
           <Stat label="累计承受伤害" value={formatNumber(summary.totalDamageTaken)} />
           <Stat label="流派倾向" value={tArchetype(state.archetype)} />
           <Stat label="主导伤害风格" value={styleLabel(summary.dominantDamageStyle)} />
+          <Stat label="核心路线" value={summary.coreRoute || "未成型"} />
           <Stat label="最危险层" value={summary.mostDangerousFloor ? String(summary.mostDangerousFloor) : "-"} />
           <Stat label="奖励数量" value={String(summary.selectedRewards.length)} />
         </CardContent>
@@ -46,33 +47,50 @@ export function RunSummaryPage(): JSX.Element {
 
       <Card>
         <CardHeader>
-          <CardTitle>奖励记录</CardTitle>
+          <CardTitle>关键强化</CardTitle>
         </CardHeader>
         <CardContent className="space-y-1 text-sm">
-          {summary.selectedRewards.length > 0 ? (
-            summary.selectedRewards.map((reward) => (
-              <p key={`${reward.floor}-${reward.optionId}`}>
-                - 第 {reward.floor} 层：{reward.title}
-              </p>
+          {(summary.keyBonuses ?? []).length > 0 ? (
+            (summary.keyBonuses ?? []).map((row) => (
+              <p key={row}>- {row}</p>
             ))
           ) : (
-            <p className="text-muted-foreground">本次未选择奖励。</p>
+            <p className="text-muted-foreground">本次无可追踪强化。</p>
           )}
         </CardContent>
       </Card>
 
       <Card>
         <CardHeader>
-          <CardTitle>构筑摘要</CardTitle>
+          <CardTitle>本局旅程节点</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-2 text-sm">
+          {summary.selectedRewards.length > 0 ? (
+            summary.selectedRewards.slice(-6).map((reward) => (
+              <div key={`${reward.floor}-${reward.optionId}`} className="rounded-md border bg-background p-2">
+                <p className="font-medium">第 {reward.floor} 层 · {reward.title}</p>
+                <p className="text-xs text-muted-foreground">类型：{reward.category}</p>
+              </div>
+            ))
+          ) : (
+            <p className="text-muted-foreground">本局未记录到可展示的旅程节点。</p>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>本局总结</CardTitle>
         </CardHeader>
         <CardContent className="space-y-2">
+          <p className="text-sm font-medium">{summary.runTakeaway || "本局已结束，建议针对压力段复盘后再开新局。"}</p>
           <p className="text-sm">{summary.shortBuildSummary}</p>
           <div className="flex flex-wrap gap-2">
             <Button size="sm" onClick={startNewRun}>
-              开始新局
+              再来一局
             </Button>
             <Button asChild size="sm" variant="secondary">
-              <Link to="/build">返回构筑</Link>
+              <Link to="/run">返回爬塔</Link>
             </Button>
           </div>
         </CardContent>

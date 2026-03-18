@@ -40,6 +40,13 @@ export function PostBattleScreen(props: PostBattleScreenProps): JSX.Element {
 
   const conclusion = report.recap?.reasonSummary ?? (report.win ? "本层通关。" : "本层失败。请调整后再试。");
   const failReason = report.win ? undefined : report.recap?.keyWinOrFailPoint ?? report.diagnosis[0]?.message;
+  const nextActionText = !report.win
+    ? "建议先补前中段稳定性，再快速重开验证。"
+    : rewardPending
+      ? "请选择1个战利品，强化后再进入下一层。"
+      : runEnded
+        ? "已到达短程演示终点，查看本局结算。"
+        : "准备进入下一层，延续当前节奏。";
 
   return (
     <div className="grid gap-4">
@@ -51,6 +58,15 @@ export function PostBattleScreen(props: PostBattleScreenProps): JSX.Element {
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-3 text-sm">
+          <div
+            className={`rounded-md border p-2 ${
+              report.win ? "border-emerald-300/70 bg-emerald-50/60" : "border-rose-300/70 bg-rose-50/60"
+            }`}
+          >
+            <p className="text-xs text-muted-foreground">下一步</p>
+            <p className="font-semibold">{nextActionText}</p>
+          </div>
+
           <div className="grid gap-2 md:grid-cols-3">
             <MiniStat label={report.win ? "战斗时长" : "坚持时间"} value={formatSeconds(report.metrics.duration)} />
             <MiniStat label="总伤害" value={formatNumber(report.metrics.totalDamage)} />

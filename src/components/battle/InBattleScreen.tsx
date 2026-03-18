@@ -27,6 +27,15 @@ export function InBattleScreen(props: InBattleScreenProps): JSX.Element {
     onSetSpeed,
     onSkip,
   } = props;
+  const latestCritical = [...playback.visibleEvents].reverse().find((entry) => entry.severity === "critical");
+  const latestWarning = [...playback.visibleEvents].reverse().find((entry) => entry.severity === "warning");
+  const keyMoments = [...playback.visibleEvents]
+    .filter((entry) => entry.severity !== "normal")
+    .slice(-3);
+  const firstKillReached =
+    report.metrics.firstKillTime !== null && playback.elapsed >= report.metrics.firstKillTime;
+  const latestEvent = playback.visibleEvents[playback.visibleEvents.length - 1];
+  const bossDangerNow = playback.bossSignalSeverity === "critical";
 
   return (
     <div className="grid gap-4">
@@ -37,6 +46,11 @@ export function InBattleScreen(props: InBattleScreenProps): JSX.Element {
             <Badge variant="outline">时间 {playback.elapsedLabel}</Badge>
             <Badge variant="outline">状态：{status}</Badge>
             <Badge variant="outline">{playback.phaseLabel}</Badge>
+            {playback.bossSignalLabel ? (
+              <Badge variant={playback.bossSignalSeverity === "critical" ? "default" : playback.bossSignalSeverity === "warning" ? "secondary" : "outline"}>
+                {playback.bossSignalLabel}
+              </Badge>
+            ) : null}
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
@@ -53,6 +67,44 @@ export function InBattleScreen(props: InBattleScreenProps): JSX.Element {
               跳过演出
             </Button>
           </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>关键节点</CardTitle>
+        </CardHeader>
+        <CardContent className="grid gap-2 text-sm md:grid-cols-3">
+          <div className="rounded-md border bg-background p-2">
+            <p className="text-xs text-muted-foreground">战局节奏</p>
+            <p className="font-semibold">
+              {firstKillReached
+                ? `首杀已达成（${report.metrics.firstKillTime?.toFixed(1)}s）`
+                : "首杀尚未达成"}
+            </p>
+          </div>
+          <div className="rounded-md border bg-background p-2">
+            <p className="text-xs text-muted-foreground">最新关键事件</p>
+            <p className="font-semibold">{latestCritical?.text ?? latestWarning?.text ?? latestEvent?.text ?? "等待事件"}</p>
+          </div>
+          <div className="rounded-md border bg-background p-2">
+            <p className="text-xs text-muted-foreground">Boss节点</p>
+            <p className={`font-semibold ${bossDangerNow ? "text-rose-700" : ""}`}>
+              {playback.bossSignalLabel ?? "当前无Boss机制节点"}
+            </p>
+          </div>
+          {keyMoments.length > 0 ? (
+            <div className="rounded-md border bg-background p-2 md:col-span-3">
+              <p className="text-xs text-muted-foreground">最近关键片段</p>
+              <div className="mt-1 grid gap-1 md:grid-cols-3">
+                {keyMoments.map((entry, index) => (
+                  <p key={`${entry.time}-${entry.typeLabel}-${index}`} className="text-xs">
+                    [{entry.timeLabel}] {entry.text}
+                  </p>
+                ))}
+              </div>
+            </div>
+          ) : null}
         </CardContent>
       </Card>
 
@@ -79,6 +131,11 @@ export function InBattleScreen(props: InBattleScreenProps): JSX.Element {
                 tone="resource"
               />
               <p className="mt-2 text-xs text-muted-foreground">状态：{playback.playerStateLabel}</p>
+              {playback.stageAlert ? (
+                <p className="mt-1 rounded border border-amber-300/70 bg-amber-50/70 px-2 py-1 text-xs font-medium text-amber-800">
+                  阶段提示：{playback.stageAlert}
+                </p>
+              ) : null}
               {report.context?.archetype === "dot" ? (
                 <div className="mt-2 space-y-2 rounded border border-emerald-300/50 bg-emerald-50/60 p-2">
                   <p className="text-xs">
@@ -130,6 +187,12 @@ export function InBattleScreen(props: InBattleScreenProps): JSX.Element {
               <p className="mt-1 text-xs">剩余敌人数：{playback.enemyAliveCount}</p>
               <p className="text-xs">召唤物数量：{playback.summonCount}</p>
               <p className="text-xs text-muted-foreground">状态：{playback.enemyStateLabel}</p>
+              <p className="mt-1 rounded border border-slate-300/60 bg-slate-50/70 px-2 py-1 text-xs">
+                {playback.enemyPressureReason}
+              </p>
+              {playback.bossSignalLabel ? (
+                <p className="mt-1 text-xs font-medium text-amber-700">首领提示：{playback.bossSignalLabel}</p>
+              ) : null}
             </div>
           </CardContent>
         </Card>
@@ -143,11 +206,23 @@ export function InBattleScreen(props: InBattleScreenProps): JSX.Element {
               {playback.visibleEvents.length > 0 ? (
                 playback.visibleEvents.map((entry, index) => {
                   const isLatest = index === playback.visibleEvents.length - 1;
+                  const rowTone =
+                    entry.severity === "critical"
+                      ? "border-l-2 border-rose-400 bg-rose-50/70"
+                      : entry.severity === "warning"
+                        ? "border-l-2 border-amber-400 bg-amber-50/60"
+                        : "border-l-2 border-transparent";
                   return (
                     <div
                       key={`${entry.time}-${entry.typeLabel}-${index}`}
-                      className={`grid grid-cols-[48px_56px_1fr] items-start gap-2 rounded px-1 py-0.5 text-xs ${
-                        isLatest ? "bg-emerald-100/70" : ""
+                      className={`grid grid-cols-[48px_56px_1fr] items-start gap-2 rounded px-1 py-0.5 text-xs ${rowTone} ${
+                        isLatest
+                          ? entry.severity === "critical"
+                            ? "bg-rose-100/80 ring-1 ring-rose-300"
+                            : entry.severity === "warning"
+                              ? "bg-amber-100/80 ring-1 ring-amber-300"
+                              : "bg-emerald-100/70 ring-1 ring-emerald-300"
+                          : ""
                       }`}
                     >
                       <span className="font-mono text-muted-foreground">{entry.timeLabel}</span>

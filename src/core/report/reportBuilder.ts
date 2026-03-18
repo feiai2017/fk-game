@@ -32,7 +32,12 @@ export function buildBattleReport(args: BuildReportInput): BattleReport {
 
   const timeline = buildBattleTimeline({
     events: simulation.combatEvents,
+    snapshots: simulation.combatSnapshots,
+    playerMaxHp: input.finalStats.hp,
   });
+  const combatLog = timeline.length
+    ? timeline.map((entry) => `[${entry.timeLabel}] ${entry.text}`)
+    : simulation.combatLog;
 
   const report: BattleReport = {
     win: simulation.win,
@@ -47,7 +52,7 @@ export function buildBattleReport(args: BuildReportInput): BattleReport {
       diagnosis,
       loadout: input.loadout,
     }),
-    combatLog: simulation.combatLog,
+    combatLog,
     combatEvents: simulation.combatEvents,
     timeline,
     combatSnapshots: simulation.combatSnapshots,
