@@ -1,24 +1,33 @@
 ﻿import { useMemo, useState } from "react";
-import type { BattleReport, RunState } from "@/core/battle/types";
+import type { BattleReport, RunProgress, RunState } from "@/core/battle/types";
 import { buildBattleAnalysisExport } from "@/core/report/exportBattleReport";
 import { buildBattleAnalysisMarkdown } from "@/core/report/exportBattleSummary";
 import { Button } from "@/components/ui/button";
 
 interface ExportReportButtonProps {
   report: BattleReport;
-  run: RunState;
+  run?: RunState;
+  runId?: string;
+  runProgress?: RunProgress;
 }
 
-export function ExportReportButton({ report, run }: ExportReportButtonProps): JSX.Element {
+export function ExportReportButton({
+  report,
+  run,
+  runId,
+  runProgress,
+}: ExportReportButtonProps): JSX.Element {
   const [copied, setCopied] = useState(false);
+  const resolvedRunId = runId ?? run?.id ?? null;
+  const resolvedRunProgress = runProgress ?? run?.progress;
   const bundle = useMemo(
     () =>
       buildBattleAnalysisExport({
         report,
-        runId: run.id,
-        runProgress: run.progress,
+        runId: resolvedRunId,
+        runProgress: resolvedRunProgress,
       }),
-    [report, run.id, run.progress],
+    [report, resolvedRunId, resolvedRunProgress],
   );
 
   const handleExportJson = () => {
