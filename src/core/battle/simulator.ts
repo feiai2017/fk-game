@@ -72,10 +72,14 @@ interface DamagePoint {
 
 interface EnemyTraitRuntime {
   nextCleanseAt: number;
+  nextShieldPulseAt: number;
+  nextSummonAt: number;
+  shieldExpiresAt: number;
+  summonCounter: number;
 }
 
-const MAX_COMBAT_LOG = 220;
-const MAX_COMBAT_EVENTS = 420;
+const MAX_COMBAT_LOG = 1600;
+const MAX_COMBAT_EVENTS = 6000;
 const MAX_COMBAT_SNAPSHOTS = 260;
 const SNAPSHOT_INTERVAL_SECONDS = 0.5;
 const SNAPSHOT_RECENT_WINDOW_SECONDS = 2;
@@ -83,13 +87,20 @@ const DOT_ROUTE_TUNING = {
   starterSpreadTickMultiplier: 0.75,
   ruptureBonusPerStack: 0.06,
   ruptureBonusCap: 0.24,
+  ruptureSingleTargetDirectBonus: 0.1,
   ruptureExecuteThreshold: 0.45,
   ruptureExecuteBonus: 0.12,
   ruptureBurstBonusPerStack: 0.025,
   ruptureBurstBonusCap: 0.12,
-  dotCycleRefund: 2,
-  dotBurstRefundPerStack: 1.5,
-  dotBurstCooldownRelief: 0.45,
+  ruptureSingleTargetBurstBonus: 0.14,
+  ruptureBurstExecuteBonus: 0.08,
+  dotNaturalRegenMultiplier: 0.92,
+  dotBasicAttackResourceGain: 6,
+  dotCycleRefund: 1.5,
+  dotBurstMinRefundStacks: 4,
+  dotBurstRefundPerStack: 0.75,
+  dotBurstCooldownRelief: 0.28,
+  dotPassiveResourceMultiplier: 0.9,
   coverageMitigationPerEnemy: 0.03,
   coverageMitigationCap: 0.1,
   killShieldRatio: 0.12,
@@ -100,7 +111,15 @@ const DOT_ROUTE_TUNING = {
 const ENEMY_TRAIT_TUNING = {
   antiDotCleanseInterval: 8.5,
   antiDotCleanseKeepRatio: 0.5,
+  tankShieldPulseInterval: 7.8,
+  tankShieldDuration: 3.8,
+  tankShieldRatio: 0.08,
+  summonerPulseInterval: 8.8,
   bossHalfHpThreshold: 0.5,
+  bossMemoryThresholds: [0.7, 0.35],
+  bossMemoryShieldRatio: 0.1,
+  bossMemorySummonCount: [1, 2],
+  bossMemoryAtkBoost: 1.05,
   bossRageAtkMultiplier: 1.22,
   bossRageSpeedMultiplier: 1.12,
 };
@@ -164,6 +183,25 @@ export function runAutoBattle(input: BattleInput): SimulationOutput {
     nextBasicAt: 0,
   };
 
+  const bossEnemy = enemies.find((enemy) => enemy.template === "boss");
+  if (bossEnemy) {
+    pushCombatEvent(combatEvents, combatLog, {
+      time: 0,
+      type: "BOSS_MECHANIC",
+      category: "danger",
+      summary: "首领登场：进入压制阶段",
+      sourceId: `enemy_${bossEnemy.id}`,
+      sourceName: `Boss敌人${bossEnemy.id}`,
+      targetId: bossEnemy.id,
+      targetName: `敌人${bossEnemy.id}`,
+      tags: ["boss", "entry"],
+      metadata: {
+        enemyTemplate: bossEnemy.template,
+        floor: input.floor.floor,
+      },
+    });
+  }
+
   captureSnapshot({
     snapshots: combatSnapshots,
     time: 0,
@@ -180,8 +218,12 @@ export function runAutoBattle(input: BattleInput): SimulationOutput {
     state.totalTicks += 1;
     advancePassiveCooldowns(passiveRuntime, SIMULATION_TICK);
 
+    const naturalRegenPerSecond =
+      input.archetype === "dot"
+        ? input.finalStats.resourceRegen * DOT_ROUTE_TUNING.dotNaturalRegenMultiplier
+        : input.finalStats.resourceRegen;
     const resourceBefore = state.resource;
-    state.resource += input.finalStats.resourceRegen * SIMULATION_TICK;
+    state.resource += naturalRegenPerSecond * SIMULATION_TICK;
     if (state.resource >= input.finalStats.resourceMax) {
       state.overflowTicks += 1;
       state.resource = clamp(state.resource, 0, input.finalStats.resourceMax);
@@ -246,8 +288,8 @@ export function runAutoBattle(input: BattleInput): SimulationOutput {
         time,
         type: "RESOURCE_GAIN",
         category: "resource",
-        summary: `自然回能 ${input.finalStats.resourceRegen.toFixed(1)}/s`,
-        amount: input.finalStats.resourceRegen * SIMULATION_TICK,
+        summary: `自然回能 ${naturalRegenPerSecond.toFixed(1)}/s`,
+        amount: naturalRegenPerSecond * SIMULATION_TICK,
         sourceName: "自然回复",
         tags: ["regen"],
       });
@@ -267,9 +309,20 @@ export function runAutoBattle(input: BattleInput): SimulationOutput {
 
     for (const enemy of aliveEnemies(enemies)) {
       tickDots(enemy, time, (dot, damage) => {
-        const dealt = applyDamage(enemy, damage);
+        const result = applyDamage(enemy, damage);
+        const dealt = result.dealt;
         if (dealt <= 0) {
           return;
+        }
+        if (result.absorbedByShield > 0) {
+          emitEnemyShieldLossEvent({
+            combatEvents,
+            combatLog,
+            time,
+            enemy,
+            loss: result.absorbedByShield,
+            triggerName: dot.name,
+          });
         }
         state.dotDamage += dealt;
         registerDamage(
@@ -297,9 +350,12 @@ export function runAutoBattle(input: BattleInput): SimulationOutput {
             state.firstKillTime = time;
           }
           const hadDotsOnKill = getDotStacks(enemy) > 0;
-          const killSummary = hadDotsOnKill
-            ? `毒蚀收割：敌人 ${enemy.id} 倒下`
-            : `敌人 ${enemy.id} 被 ${dot.name} 击败`;
+          const isBossKill = enemy.template === "boss";
+          const killSummary = isBossKill
+            ? `首领被${dot.name}击败`
+            : hadDotsOnKill
+              ? `毒蚀收割：敌人 ${enemy.id} 倒下`
+              : `敌人 ${enemy.id} 被 ${dot.name} 击败`;
           pushCombatEvent(combatEvents, combatLog, {
             time,
             type: "ENEMY_KILL",
@@ -309,7 +365,14 @@ export function runAutoBattle(input: BattleInput): SimulationOutput {
             sourceName: dot.sourceName,
             targetId: enemy.id,
             targetName: `敌人${enemy.id}`,
-            tags: hadDotsOnKill ? ["kill", "dot", "harvest"] : ["kill", "dot"],
+            tags: isBossKill
+              ? ["kill", "dot", "boss"]
+              : hadDotsOnKill
+                ? ["kill", "dot", "harvest"]
+                : ["kill", "dot"],
+            metadata: {
+              enemyTemplate: enemy.template,
+            },
           });
           if (hadDotsOnKill) {
             applyDotKillStabilizer({
@@ -363,7 +426,14 @@ export function runAutoBattle(input: BattleInput): SimulationOutput {
 
     const living = aliveEnemies(enemies);
     const primaryTarget = living[0];
+    const dotCoveredCount = living.filter((enemy) => getDotStacks(enemy) > 0).length;
+    const highStackTargetCount = living.filter((enemy) => getDotStacks(enemy) >= dotFlowState.keyStackThreshold).length;
+    const maxTargetDotStacks =
+      living.length > 0
+        ? living.reduce((max, enemy) => Math.max(max, getDotStacks(enemy)), 0)
+        : 0;
     const selection = selectReadySkill(input.skills, cooldowns, {
+      decisionMode: input.decisionMode ?? "improved",
       archetype: input.archetype,
       elapsedTime: time,
       resource: state.resource,
@@ -372,6 +442,9 @@ export function runAutoBattle(input: BattleInput): SimulationOutput {
       targetHpRatio: primaryTarget ? clamp(primaryTarget.hp / primaryTarget.maxHp, 0, 1) : 1,
       targetDotStacks: primaryTarget ? getDotStacks(primaryTarget) : 0,
       enemyCount: living.length,
+      dotCoveredCount,
+      highStackTargetCount,
+      maxTargetDotStacks,
       resourceStarvedRate: state.totalTicks > 0 ? state.starvedTicks / state.totalTicks : 0,
       resourceOverflowRate: state.totalTicks > 0 ? state.overflowTicks / state.totalTicks : 0,
     });
@@ -491,7 +564,18 @@ export function runAutoBattle(input: BattleInput): SimulationOutput {
       const base = input.finalStats.atk * pressureDamageModifier("direct", input.floor.pressure);
       const crit = rollCrit(input.finalStats.crit, rng);
       const critApplied = crit ? base * critMultiplier(input.finalStats.critDamage) : base;
-      const dealt = applyDamage(target, reduceEnemyMitigation(critApplied, target));
+      const basicResult = applyDamage(target, reduceEnemyMitigation(critApplied, target));
+      const dealt = basicResult.dealt;
+      if (basicResult.absorbedByShield > 0) {
+        emitEnemyShieldLossEvent({
+          combatEvents,
+          combatLog,
+          time,
+          enemy: target,
+          loss: basicResult.absorbedByShield,
+          triggerName: "基础攻击",
+        });
+      }
       if (dealt > 0) {
         registerDamage(
           damageEntries,
@@ -514,7 +598,10 @@ export function runAutoBattle(input: BattleInput): SimulationOutput {
           tags: crit ? ["basic", "crit"] : ["basic"],
         });
       }
-      const gain = 8 + (input.archetype === "engine" ? 1 : 0);
+      const gain =
+        input.archetype === "dot"
+          ? DOT_ROUTE_TUNING.dotBasicAttackResourceGain
+          : 8 + (input.archetype === "engine" ? 1 : 0);
       state.resource = clamp(state.resource + gain, 0, input.finalStats.resourceMax);
       pushCombatEvent(combatEvents, combatLog, {
         time,
@@ -535,12 +622,15 @@ export function runAutoBattle(input: BattleInput): SimulationOutput {
           time,
           type: "ENEMY_KILL",
           category: "offense",
-          summary: `敌人 ${target.id} 被基础攻击击败`,
+          summary: target.template === "boss" ? "首领被基础攻击击败" : `敌人 ${target.id} 被基础攻击击败`,
           sourceId: "basic_attack",
           sourceName: "基础攻击",
           targetId: target.id,
           targetName: `敌人${target.id}`,
-          tags: ["kill", "basic"],
+          tags: target.template === "boss" ? ["kill", "basic", "boss"] : ["kill", "basic"],
+          metadata: {
+            enemyTemplate: target.template,
+          },
         });
       }
     }
@@ -580,23 +670,38 @@ export function runAutoBattle(input: BattleInput): SimulationOutput {
           }
           const heavy = afterShield >= input.finalStats.hp * 0.18;
           const sourceName = `敌人${enemy.id}(${enemy.template})`;
+          const bossSkillName = enemy.template === "boss"
+            ? enemy.bossMechanicTriggered
+              ? "狂怒扑击"
+              : "压制重击"
+            : undefined;
           pushCombatEvent(combatEvents, combatLog, {
             time,
             type: heavy ? "ENEMY_HEAVY_HIT" : "ENEMY_HIT",
             category: heavy ? "danger" : "defense",
             summary:
-              mitigationRatio > 0
-                ? `${sourceName} 造成 ${Math.round(afterShield)} 伤害（DOT压制减伤 ${Math.round(mitigationRatio * 100)}%）`
-                : `${sourceName} 造成 ${Math.round(afterShield)} 伤害`,
+              enemy.template === "boss" && heavy
+                ? `首领发动【${bossSkillName ?? "重击"}】，造成 ${Math.round(afterShield)}`
+                : mitigationRatio > 0
+                  ? `${sourceName} 造成 ${Math.round(afterShield)} 伤害（DOT压制减伤 ${Math.round(mitigationRatio * 100)}%）`
+                  : `${sourceName} 造成 ${Math.round(afterShield)} 伤害`,
             amount: afterShield,
             sourceId: `enemy_${enemy.id}`,
             sourceName,
-            tags: heavy ? ["incoming", "heavy"] : ["incoming"],
+            tags:
+              enemy.template === "boss"
+                ? heavy
+                  ? ["incoming", "heavy", "boss", "boss_skill"]
+                  : ["incoming", "boss"]
+                : heavy
+                  ? ["incoming", "heavy"]
+                  : ["incoming"],
             metadata: {
               mitigationRatio,
               aliveEnemies: livingEnemies.length,
               enemyTemplate: enemy.template,
               enemySpeed: enemy.speed,
+              bossSkillName,
             },
           });
           enemy.nextAttackAt += enemyAttackCadence(enemy, input.floor.pressure);
@@ -780,6 +885,10 @@ function castSkill(args: CastSkillArgs): void {
       );
     }
   }
+  const playerResourceRatio = clamp(currentResource / Math.max(1, input.finalStats.resourceMax), 0, 1);
+  const targets = skill.tags.includes("aoe") ? aliveEnemies(enemies) : aliveEnemies(enemies).slice(0, 1);
+  const castTarget = skill.id === "rupture_bloom" ? selectRuptureTarget(enemies) ?? targets[0] : targets[0];
+
   pushCombatEvent(combatEvents, combatLog, {
     time,
     type: "SKILL_CAST",
@@ -789,10 +898,12 @@ function castSkill(args: CastSkillArgs): void {
     sourceName: skill.name,
     amount: skill.cost,
     tags: ["cast", ...skill.tags],
+    metadata: {
+      targetHpRatio: castTarget ? clamp(castTarget.hp / castTarget.maxHp, 0, 1) : 1,
+      targetDotStacks: castTarget ? getDotStacks(castTarget) : 0,
+    },
   });
 
-  const playerResourceRatio = clamp(currentResource / Math.max(1, input.finalStats.resourceMax), 0, 1);
-  const targets = skill.tags.includes("aoe") ? aliveEnemies(enemies) : aliveEnemies(enemies).slice(0, 1);
   const pressureDirect = pressureDamageModifier("direct", input.floor.pressure);
 
   const castActions = resolvePassive(
@@ -802,8 +913,8 @@ function castSkill(args: CastSkillArgs): void {
         now: time,
         skill,
         resourceSpent: skill.cost,
-        targetHpRatio: targets[0] ? clamp(targets[0].hp / targets[0].maxHp, 0, 1) : 1,
-        targetDotStacks: targets[0] ? getDotStacks(targets[0]) : 0,
+        targetHpRatio: castTarget ? clamp(castTarget.hp / castTarget.maxHp, 0, 1) : 1,
+        targetDotStacks: castTarget ? getDotStacks(castTarget) : 0,
         playerResourceRatio,
       },
     rng,
@@ -850,6 +961,9 @@ function castSkill(args: CastSkillArgs): void {
           targetDotStacksBeforeHit * (DOT_ROUTE_TUNING.ruptureBonusPerStack + surgePerStack),
         );
         raw *= 1 + stackBonus;
+        if (currentTargets.length === 1) {
+          raw *= 1 + DOT_ROUTE_TUNING.ruptureSingleTargetDirectBonus;
+        }
         if (target.hp <= target.maxHp * DOT_ROUTE_TUNING.ruptureExecuteThreshold) {
           raw *= 1 + DOT_ROUTE_TUNING.ruptureExecuteBonus;
         }
@@ -859,7 +973,18 @@ function castSkill(args: CastSkillArgs): void {
         raw *= 1 + executeBonus;
       }
 
-      const dealt = applyDamage(target, reduceEnemyMitigation(raw, target));
+      const directResult = applyDamage(target, reduceEnemyMitigation(raw, target));
+      const dealt = directResult.dealt;
+      if (directResult.absorbedByShield > 0) {
+        emitEnemyShieldLossEvent({
+          combatEvents,
+          combatLog,
+          time,
+          enemy: target,
+          loss: directResult.absorbedByShield,
+          triggerName: skill.name,
+        });
+      }
       if (dealt > 0) {
         registerDamage(
           damageEntries,
@@ -916,16 +1041,28 @@ function castSkill(args: CastSkillArgs): void {
       if (dealt > 0 && target.hp <= 0) {
         onFirstKill(time);
         const harvestKill = targetDotStacksBeforeHit > 0;
+        const isBossKill = target.template === "boss";
         pushCombatEvent(combatEvents, combatLog, {
           time,
           type: "ENEMY_KILL",
           category: "offense",
-          summary: harvestKill ? `${skill.name} 收割击杀（敌${target.id}）` : `敌人 ${target.id} 被 ${skill.name} 击败`,
+          summary: isBossKill
+            ? `首领被${skill.name}击败`
+            : harvestKill
+              ? `${skill.name} 收割击杀（敌${target.id}）`
+              : `敌人 ${target.id} 被 ${skill.name} 击败`,
           sourceId: skill.id,
           sourceName: skill.name,
           targetId: target.id,
           targetName: `敌人${target.id}`,
-          tags: harvestKill ? ["kill", "skill", "harvest"] : ["kill", "skill"],
+          tags: isBossKill
+            ? ["kill", "skill", "boss"]
+            : harvestKill
+              ? ["kill", "skill", "harvest"]
+              : ["kill", "skill"],
+          metadata: {
+            enemyTemplate: target.template,
+          },
         });
         if (targetDotStacksBeforeHit > 0) {
           applyDotKillStabilizer({
@@ -967,6 +1104,7 @@ function castSkill(args: CastSkillArgs): void {
           stacksAfter,
           stackDelta,
           keyStackThreshold: dotFlowState.keyStackThreshold,
+          dotName: skill.dot.name,
         },
       });
       maybeEmitDotKeyStackEvent({
@@ -1009,6 +1147,7 @@ function castSkill(args: CastSkillArgs): void {
             stacksAfter: spreadAfter,
             stackDelta: spreadDelta,
             keyStackThreshold: dotFlowState.keyStackThreshold,
+            dotName: skill.dot.name,
           },
         });
         maybeEmitDotKeyStackEvent({
@@ -1066,6 +1205,7 @@ function castSkill(args: CastSkillArgs): void {
             stacksAfter: extraAfter,
             stackDelta: extraDelta,
             keyStackThreshold: dotFlowState.keyStackThreshold,
+            dotName: skill.dot.name,
           },
         });
         maybeEmitDotKeyStackEvent({
@@ -1129,12 +1269,38 @@ function castSkill(args: CastSkillArgs): void {
                   maxPassiveEffectValue(passiveRuntime, "RUPTURE_STACK_SURGE", "value") * 0.4),
             )
           : 0;
+      const singleTargetBurstBonus =
+        skill.id === "rupture_bloom" && aliveEnemies(enemies).length === 1 && targetDotStacks >= DOT_ROUTE_TUNING.dotBurstMinRefundStacks
+          ? DOT_ROUTE_TUNING.ruptureSingleTargetBurstBonus
+          : 0;
+      const executeBurstBonus =
+        skill.id === "rupture_bloom" &&
+        targetDotStacks >= DOT_ROUTE_TUNING.dotBurstMinRefundStacks - 1 &&
+        target.hp <= target.maxHp * DOT_ROUTE_TUNING.ruptureExecuteThreshold
+          ? DOT_ROUTE_TUNING.ruptureBurstExecuteBonus
+          : 0;
       const burstPercent =
         (skill.burstDotPercent ?? 0) *
-        (1 + burstBonus + castOutcome.dotBurstMultiplierBonus + ruptureBurstBonus);
+        (1 +
+          burstBonus +
+          castOutcome.dotBurstMultiplierBonus +
+          ruptureBurstBonus +
+          singleTargetBurstBonus +
+          executeBurstBonus);
       const burst = burstDotDamage(target, burstPercent);
       if (burst > 0) {
-        const dealt = applyDamage(target, burst);
+        const burstResult = applyDamage(target, burst);
+        const dealt = burstResult.dealt;
+        if (burstResult.absorbedByShield > 0) {
+          emitEnemyShieldLossEvent({
+            combatEvents,
+            combatLog,
+            time,
+            enemy: target,
+            loss: burstResult.absorbedByShield,
+            triggerName: skill.name,
+          });
+        }
         registerDamage(
           damageEntries,
           damageTimeline,
@@ -1147,7 +1313,10 @@ function castSkill(args: CastSkillArgs): void {
           time,
           type: "DOT_BURST",
           category: "offense",
-          summary: `${skill.name} 引爆触发，造成 ${Math.round(dealt)}`,
+          summary:
+            skill.id === "rupture_bloom"
+              ? `${skill.name} 裂蚀转化触发，造成 ${Math.round(dealt)}`
+              : `${skill.name} 引爆触发，造成 ${Math.round(dealt)}`,
           amount: dealt,
           sourceId: skill.id,
           sourceName: skill.name,
@@ -1160,23 +1329,31 @@ function castSkill(args: CastSkillArgs): void {
           },
         });
         if (input.archetype === "dot" && skill.id === "rupture_bloom" && targetDotStacks > 0) {
-          const refund = targetDotStacks * DOT_ROUTE_TUNING.dotBurstRefundPerStack;
-          gainResource(refund, "裂蚀转化回能");
-          reduceAllCooldownsBy(DOT_ROUTE_TUNING.dotBurstCooldownRelief);
+          const eligibleStacks = Math.max(0, targetDotStacks - (DOT_ROUTE_TUNING.dotBurstMinRefundStacks - 1));
+          if (eligibleStacks > 0) {
+            const refund = eligibleStacks * DOT_ROUTE_TUNING.dotBurstRefundPerStack;
+            gainResource(refund, "裂蚀转化回能");
+            const cooldownReliefScale = clamp(eligibleStacks / 3, 0.35, 1);
+            reduceAllCooldownsBy(DOT_ROUTE_TUNING.dotBurstCooldownRelief * cooldownReliefScale);
+          }
         }
       }
       if (target.hp <= 0 && targetDotStacks > 0) {
         onFirstKill(time);
+        const isBossKill = target.template === "boss";
         pushCombatEvent(combatEvents, combatLog, {
           time,
           type: "ENEMY_KILL",
           category: "offense",
-          summary: `${skill.name} 收割击杀（敌${target.id}）`,
+          summary: isBossKill ? `首领被${skill.name}引爆击败` : `${skill.name} 收割击杀（敌${target.id}）`,
           sourceId: skill.id,
           sourceName: skill.name,
           targetId: target.id,
           targetName: `敌人${target.id}`,
-          tags: ["kill", "burst", "harvest"],
+          tags: isBossKill ? ["kill", "burst", "boss"] : ["kill", "burst", "harvest"],
+          metadata: {
+            enemyTemplate: target.template,
+          },
         });
         applyDotKillStabilizer({
           input,
@@ -1194,10 +1371,21 @@ function castSkill(args: CastSkillArgs): void {
     if (target) {
       const procRatio = (skill.procRatio ?? 0) + consumeNextProcBonus(passiveRuntime);
       const raw = input.finalStats.atk * procRatio * (1 + input.finalStats.procPower);
-      const dealt = applyDamage(
+      const procResult = applyDamage(
         target,
         reduceEnemyMitigation(raw * pressureDamageModifier("proc", input.floor.pressure), target),
       );
+      const dealt = procResult.dealt;
+      if (procResult.absorbedByShield > 0) {
+        emitEnemyShieldLossEvent({
+          combatEvents,
+          combatLog,
+          time,
+          enemy: target,
+          loss: procResult.absorbedByShield,
+          triggerName: skill.name,
+        });
+      }
       if (dealt > 0) {
         onProcDamage(dealt);
         registerDamage(
@@ -1229,10 +1417,21 @@ function castSkill(args: CastSkillArgs): void {
     if (target) {
       const procRatio = 0.3 + consumeNextProcBonus(passiveRuntime);
       const raw = input.finalStats.atk * procRatio * (1 + input.finalStats.procPower);
-      const dealt = applyDamage(
+      const coreProcResult = applyDamage(
         target,
         reduceEnemyMitigation(raw * pressureDamageModifier("proc", input.floor.pressure), target),
       );
+      const dealt = coreProcResult.dealt;
+      if (coreProcResult.absorbedByShield > 0) {
+        emitEnemyShieldLossEvent({
+          combatEvents,
+          combatLog,
+          time,
+          enemy: target,
+          loss: coreProcResult.absorbedByShield,
+          triggerName: input.loadout.core?.name ?? "核心触发",
+        });
+      }
       if (dealt > 0 && input.loadout.core) {
         onProcDamage(dealt);
         registerDamage(
@@ -1318,7 +1517,11 @@ function applyPassiveActions(args: ApplyPassiveActionsArgs): PassiveActionOutcom
 
   for (const action of actions) {
     if ((action.grantResource ?? 0) > 0) {
-      onGrantResource(action.grantResource ?? 0, action.sourceName);
+      const adjustedGain =
+        input.archetype === "dot"
+          ? (action.grantResource ?? 0) * DOT_ROUTE_TUNING.dotPassiveResourceMultiplier
+          : (action.grantResource ?? 0);
+      onGrantResource(adjustedGain, action.sourceName);
     }
     if ((action.addShield ?? 0) > 0) {
       onShieldGain(action.addShield ?? 0, action.sourceName);
@@ -1339,10 +1542,27 @@ function applyPassiveActions(args: ApplyPassiveActionsArgs): PassiveActionOutcom
       }
       const procRatio = (action.bonusProcRatio ?? 0) + consumeNextProcBonus(passiveRuntime);
       const raw = input.finalStats.atk * procRatio * (1 + input.finalStats.procPower);
-      const dealt = applyDamage(
+      const triggerProcResult = applyDamage(
         target,
         reduceEnemyMitigation(raw * pressureDamageModifier("proc", input.floor.pressure), target),
       );
+      const dealt = triggerProcResult.dealt;
+      if (triggerProcResult.absorbedByShield > 0) {
+        onCombatEvent({
+          time,
+          type: "SHIELD_LOSS",
+          category: "offense",
+          summary: `${target.template === "boss" ? "首领" : `敌人${target.id}`}护盾被${action.sourceName}击破 ${Math.round(
+            triggerProcResult.absorbedByShield,
+          )}`,
+          amount: triggerProcResult.absorbedByShield,
+          sourceId: `enemy_${target.id}`,
+          sourceName: target.template === "boss" ? `Boss敌人${target.id}` : `敌人${target.id}(${target.template})`,
+          targetId: target.id,
+          targetName: `敌人${target.id}`,
+          tags: ["enemy", "shield", "loss", "player_break"],
+        });
+      }
       if (dealt > 0) {
         onProcDamage(dealt);
         registerDamage(
@@ -1446,6 +1666,117 @@ function resolveEnemyTraitMechanics(args: ResolveEnemyTraitArgs): void {
       runtime.nextCleanseAt += ENEMY_TRAIT_TUNING.antiDotCleanseInterval / clamp(enemy.speed, 0.55, 2.2);
     }
 
+    if (enemy.template === "tank" && time >= runtime.nextShieldPulseAt) {
+      const gain = Math.max(1, Math.round(enemy.maxHp * ENEMY_TRAIT_TUNING.tankShieldRatio));
+      enemy.shield += gain;
+      runtime.shieldExpiresAt = time + ENEMY_TRAIT_TUNING.tankShieldDuration;
+      pushCombatEvent(combatEvents, combatLog, {
+        time,
+        type: "SHIELD_GAIN",
+        category: "defense",
+        summary: `壁垒守卫抬盾 +${gain}`,
+        amount: gain,
+        sourceId: `enemy_${enemy.id}`,
+        sourceName: `敌人${enemy.id}(tank)`,
+        targetId: enemy.id,
+        targetName: `敌人${enemy.id}`,
+        tags: ["enemy", "shield", "tank"],
+      });
+      runtime.nextShieldPulseAt += ENEMY_TRAIT_TUNING.tankShieldPulseInterval / clamp(enemy.speed, 0.55, 2.2);
+    }
+
+    if (enemy.template === "tank" && enemy.shield > 0 && time >= runtime.shieldExpiresAt) {
+      const decay = Math.max(1, Math.round(enemy.shield * 0.65));
+      enemy.shield = Math.max(0, enemy.shield - decay);
+      pushCombatEvent(combatEvents, combatLog, {
+        time,
+        type: "SHIELD_LOSS",
+        category: "offense",
+        summary: `壁垒守卫护盾衰减 ${decay}`,
+        amount: decay,
+        sourceId: `enemy_${enemy.id}`,
+        sourceName: `敌人${enemy.id}(tank)`,
+        targetId: enemy.id,
+        targetName: `敌人${enemy.id}`,
+        tags: ["enemy", "shield", "decay"],
+      });
+      runtime.shieldExpiresAt = time + 1.4;
+    }
+
+    if (enemy.template === "summoner" && time >= runtime.nextSummonAt) {
+      runtime.summonCounter += 1;
+      const summonCount = runtime.summonCounter % 3 === 0 ? 2 : 1;
+      pushCombatEvent(combatEvents, combatLog, {
+        time,
+        type: "ENEMY_SUMMON",
+        category: "danger",
+        summary: `孢巢召主召唤孢体 x${summonCount}`,
+        amount: summonCount,
+        sourceId: `enemy_${enemy.id}`,
+        sourceName: `敌人${enemy.id}(summoner)`,
+        targetId: enemy.id,
+        targetName: `敌人${enemy.id}`,
+        tags: ["enemy", "summon", "summoner"],
+      });
+      runtime.nextSummonAt += ENEMY_TRAIT_TUNING.summonerPulseInterval / clamp(enemy.speed, 0.55, 2.2);
+    }
+
+    if (enemy.template === "boss") {
+      const stage = enemy.bossMemoryStage ?? 0;
+      const threshold = ENEMY_TRAIT_TUNING.bossMemoryThresholds[stage];
+      if (threshold !== undefined && enemy.hp <= enemy.maxHp * threshold) {
+        enemy.bossMemoryStage = stage + 1;
+        const shieldGain = Math.max(1, Math.round(enemy.maxHp * ENEMY_TRAIT_TUNING.bossMemoryShieldRatio));
+        enemy.shield += shieldGain;
+        enemy.atk = Math.max(1, Math.round(enemy.atk * ENEMY_TRAIT_TUNING.bossMemoryAtkBoost));
+        const summonCount = ENEMY_TRAIT_TUNING.bossMemorySummonCount[Math.min(stage, ENEMY_TRAIT_TUNING.bossMemorySummonCount.length - 1)] ?? 1;
+
+        pushCombatEvent(combatEvents, combatLog, {
+          time,
+          type: "BOSS_MECHANIC",
+          category: "danger",
+          summary: `首领记忆脉冲 ${stage + 1}：抬盾并召唤增压`,
+          sourceId: `enemy_${enemy.id}`,
+          sourceName: `Boss敌人${enemy.id}`,
+          targetId: enemy.id,
+          targetName: `敌人${enemy.id}`,
+          tags: ["boss", "memory", "mechanic"],
+          metadata: {
+            stage: stage + 1,
+            threshold,
+            shieldGain,
+            summonCount,
+          },
+        });
+
+        pushCombatEvent(combatEvents, combatLog, {
+          time,
+          type: "SHIELD_GAIN",
+          category: "defense",
+          summary: `首领记忆护盾 +${shieldGain}`,
+          amount: shieldGain,
+          sourceId: `enemy_${enemy.id}`,
+          sourceName: `Boss敌人${enemy.id}`,
+          targetId: enemy.id,
+          targetName: `敌人${enemy.id}`,
+          tags: ["enemy", "boss", "shield", "memory"],
+        });
+
+        pushCombatEvent(combatEvents, combatLog, {
+          time,
+          type: "ENEMY_SUMMON",
+          category: "danger",
+          summary: `首领召唤孢体 x${summonCount}`,
+          amount: summonCount,
+          sourceId: `enemy_${enemy.id}`,
+          sourceName: `Boss敌人${enemy.id}`,
+          targetId: enemy.id,
+          targetName: `敌人${enemy.id}`,
+          tags: ["enemy", "boss", "summon"],
+        });
+      }
+    }
+
     if (
       enemy.template === "boss" &&
       !enemy.bossMechanicTriggered &&
@@ -1469,7 +1800,7 @@ function resolveEnemyTraitMechanics(args: ResolveEnemyTraitArgs): void {
         sourceName: `Boss敌人${enemy.id}`,
         targetId: enemy.id,
         targetName: `敌人${enemy.id}`,
-        tags: ["boss", "mechanic", "rage"],
+        tags: ["boss", "mechanic", "rage", "phase_shift"],
         metadata: {
           removedStacks,
           bossAtk: enemy.atk,
@@ -1504,6 +1835,16 @@ function buildEnemyTraitRuntime(enemies: EnemyState[]): Map<number, EnemyTraitRu
         enemy.template === "antiDot"
           ? 4.2 / clamp(enemy.speed, 0.55, 2.2)
           : Number.POSITIVE_INFINITY,
+      nextShieldPulseAt:
+        enemy.template === "tank"
+          ? 4.8 / clamp(enemy.speed, 0.55, 2.2)
+          : Number.POSITIVE_INFINITY,
+      nextSummonAt:
+        enemy.template === "summoner" || enemy.template === "boss"
+          ? 5.5 / clamp(enemy.speed, 0.55, 2.2)
+          : Number.POSITIVE_INFINITY,
+      shieldExpiresAt: Number.POSITIVE_INFINITY,
+      summonCounter: 0,
     });
   }
   return runtime;
@@ -1540,12 +1881,14 @@ function buildEnemiesForFloor(input: BattleInput): EnemyState[] {
       template: unit.template,
       maxHp: unit.hp,
       hp: unit.hp,
+      shield: 0,
       atk: unit.atk,
       def: unit.def,
       resist: unit.resist,
       speed: unit.speed,
       nextAttackAt: enemyAttackCadenceBySpeed(unit.speed, input.floor.pressure),
       dots: [],
+      bossMemoryStage: 0,
     }));
   }
   return Array.from({ length: input.floor.enemyCount }, (_, index) => ({
@@ -1553,12 +1896,14 @@ function buildEnemiesForFloor(input: BattleInput): EnemyState[] {
     template: input.floor.boss ? "boss" : "balanced",
     maxHp: input.floor.enemyHp,
     hp: input.floor.enemyHp,
+    shield: 0,
     atk: input.floor.enemyAtk,
     def: input.floor.enemyDef,
     resist: input.floor.enemyResist,
     speed: input.floor.enemySpeed || 1,
     nextAttackAt: enemyAttackCadenceBySpeed(input.floor.enemySpeed || 1, input.floor.pressure),
     dots: [],
+    bossMemoryStage: 0,
   }));
 }
 
@@ -1602,13 +1947,53 @@ function consumeBattleFlag(runtime: PassiveRuntime, key: string): boolean {
   return true;
 }
 
-function applyDamage(enemy: EnemyState, amount: number): number {
-  if (enemy.hp <= 0 || amount <= 0) {
-    return 0;
+interface DamageResult {
+  dealt: number;
+  absorbedByShield: number;
+}
+
+interface EmitEnemyShieldLossEventInput {
+  combatEvents: CombatEvent[];
+  combatLog: string[];
+  time: number;
+  enemy: EnemyState;
+  loss: number;
+  triggerName: string;
+}
+
+function emitEnemyShieldLossEvent(input: EmitEnemyShieldLossEventInput): void {
+  if (input.loss <= 0) {
+    return;
   }
-  const dealt = Math.min(enemy.hp, amount);
+  const enemyLabel = input.enemy.template === "boss" ? "首领" : `敌人${input.enemy.id}`;
+  pushCombatEvent(input.combatEvents, input.combatLog, {
+    time: input.time,
+    type: "SHIELD_LOSS",
+    category: "offense",
+    summary: `${enemyLabel}护盾被${input.triggerName}击破 ${Math.round(input.loss)}`,
+    amount: input.loss,
+    sourceId: `enemy_${input.enemy.id}`,
+    sourceName: input.enemy.template === "boss" ? `Boss敌人${input.enemy.id}` : `敌人${input.enemy.id}(${input.enemy.template})`,
+    targetId: input.enemy.id,
+    targetName: `敌人${input.enemy.id}`,
+    tags: ["enemy", "shield", "loss", "player_break"],
+  });
+}
+
+function applyDamage(enemy: EnemyState, amount: number): DamageResult {
+  if (enemy.hp <= 0 || amount <= 0) {
+    return { dealt: 0, absorbedByShield: 0 };
+  }
+
+  const shieldLoss = Math.min(enemy.shield, amount);
+  if (shieldLoss > 0) {
+    enemy.shield -= shieldLoss;
+  }
+
+  const hpDamage = Math.max(0, amount - shieldLoss);
+  const dealt = Math.min(enemy.hp, hpDamage);
   enemy.hp -= dealt;
-  return dealt;
+  return { dealt, absorbedByShield: shieldLoss };
 }
 
 function aliveEnemies(enemies: EnemyState[]): EnemyState[] {
@@ -1648,6 +2033,7 @@ function maybeEmitDotKeyStackEvent(args: EmitDotKeyStackArgs): void {
     return;
   }
   dotFlowState.keyStackTargets.add(enemy.id);
+  const dominantDot = [...enemy.dots].sort((a, b) => b.stacks - a.stacks)[0];
   pushCombatEvent(combatEvents, combatLog, {
     time,
     type: "BUFF_GAIN",
@@ -1661,6 +2047,7 @@ function maybeEmitDotKeyStackEvent(args: EmitDotKeyStackArgs): void {
     metadata: {
       targetDotStacks: totalStacks,
       keyStackThreshold: dotFlowState.keyStackThreshold,
+      dotName: dominantDot?.name ?? "腐蚀",
     },
   });
 }
@@ -1822,12 +2209,15 @@ function pruneDamagePoints(points: DamagePoint[], now: number, window: number): 
 }
 
 function pushCombatEvent(events: CombatEvent[], logs: string[], event: CombatEvent): void {
-  if (events.length < MAX_COMBAT_EVENTS) {
-    events.push({ ...event, time: roundTime(event.time) });
+  if (events.length >= MAX_COMBAT_EVENTS) {
+    events.shift();
   }
-  if (logs.length < MAX_COMBAT_LOG) {
-    logs.push(`[${roundTime(event.time).toFixed(1)}] ${event.summary}`);
+  events.push({ ...event, time: roundTime(event.time) });
+
+  if (logs.length >= MAX_COMBAT_LOG) {
+    logs.shift();
   }
+  logs.push(`[${roundTime(event.time).toFixed(1)}] ${event.summary}`);
 }
 
 function roundTime(value: number): number {
@@ -1854,3 +2244,15 @@ function computeBurstDps(timeline: number[], windowSeconds: number): number {
   }
   return maxWindowDamage / windowSeconds;
 }
+
+
+
+
+
+
+
+
+
+
+
+
